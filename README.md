@@ -16,7 +16,7 @@ npm install
 
 # Configure (copy .env.example to .env and add your DashScope key)
 cp .env.example .env
-# Edit .env: set DASHSCOPE_API_KEY=sk-xxx
+# Edit .env: set DEEPSEEK_API_KEY=sk-xxx (get from https://siliconflow.cn)
 
 # Run
 npm run dev        # local dev with hot reload
@@ -120,8 +120,8 @@ every call counts toward the ranking while the first 3 free trials lower the bar
 1. Push to GitHub
 2. Connect Render to your repo
 3. Set environment variables:
-   - `DASHSCOPE_API_KEY` = your DashScope key
-   - `PROVIDER` = `qwen`
+   - `DEEPSEEK_API_KEY` = your SiliconFlow key (https://siliconflow.cn)
+   - `PROVIDER` = `deepseek` (default)
    - `PORT` = `10000`
 4. Deploy
 
@@ -136,16 +136,17 @@ PORT=4000 npm start
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `DASHSCOPE_API_KEY` | Yes* | — | DashScope API key (Qwen) |
-| `PROVIDER` | No | `qwen` | Model provider: `qwen` or `claude` |
-| `MASK_MODEL` | No | `qwen-plus` | Model name for Qwen |
-| `ANTHROPIC_API_KEY` | Yes** | — | Required if PROVIDER=claude |
+| `DEEPSEEK_API_KEY` | Yes* | — | SiliconFlow API key (DeepSeek) — https://siliconflow.cn |
+| `PROVIDER` | No | `deepseek` | Model provider: `deepseek` (default) or `qwen` |
+| `DEEPSEEK_MODEL` | No | `deepseek-ai/DeepSeek-V2.5` | Model name for DeepSeek |
+| `DASHSCOPE_API_KEY` | Yes** | — | Required only if PROVIDER=qwen (DashScope) |
+| `MASK_MODEL` | No | `qwen-plus` | Model name for Qwen (DashScope) |
 | `PORT` | No | `4000` | Service port |
 | `AUDIT_DIR` | No | `./audit` | Audit log directory |
 | `DISCORD_AUDIT_WEBHOOK` | No | — | Optional Discord webhook for call logging |
 
-*Required for production use.  
-**Required only when using Claude provider.
+*Required for production use (default provider).  
+**Required only when using PROVIDER=qwen.
 
 ## Project Structure
 
@@ -168,7 +169,7 @@ sharedos-verify/
 ## Tech Stack
 
 - **Runtime**: Node.js 18+, TypeScript
-- **LLM**: Qwen (DashScope) or Claude (Anthropic)
+- **LLM**: DeepSeek (SiliconFlow) or Qwen (DashScope)
 - **Framework**: Express
 - **Agent Platform**: SharedOS SDK (`@aicoo/sharedos`)
 - **Testing**: Vitest

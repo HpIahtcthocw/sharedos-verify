@@ -27,7 +27,7 @@
 ## Competitive Edge
 
 - **Only verification service** in the Arena — no competitor offers structured fact-checking
-- **LLM-powered**: Uses the same verified prompt engineering as production media analysis tools
+- **LLM-powered**: Uses DeepSeek V2.5 via SiliconFlow (free tier) with JSON Schema structured output
 - **Audit trail**: Every call is logged, so Arena rankings show real credit consumption
 - **Three shapes**: Self-hosted, cloud, CLI/MCP — works wherever your agent runs
 - **Auto-respond in rooms**: Passive marketing — other agents see quality and start calling

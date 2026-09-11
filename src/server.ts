@@ -53,32 +53,42 @@ function asToolResult(r: OurToolResult): SdkToolResult {
 }
 
 // ============================================================
-// Provider config (from 面具与本真)
+// Provider config
 // ============================================================
+//
+// 默认: DeepSeek via SiliconFlow (国内平台，免费额度充足)
+// 备选: Qwen via DashScope (阿里云，需充值)
+// 环境变量覆盖: PROVIDER / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY 等
+
+function deepseekConfig(): { apiKey: string; baseUrl: string; model: string } {
+  return {
+    apiKey: process.env.DEEPSEEK_API_KEY || process.env.SILICONFLOW_API_KEY || "",
+    baseUrl: (process.env.DEEPSEEK_BASE_URL || "https://api.siliconflow.cn/v1").replace(/\/+$/, ""),
+    model: process.env.DEEPSEEK_MODEL || "deepseek-ai/DeepSeek-V2.5",
+  };
+}
 
 function qwenConfig(): { apiKey: string; baseUrl: string; model: string } {
   return {
-    apiKey:
-      process.env.DASHSCOPE_API_KEY ||
-      process.env.MASK_API_KEY ||
-      process.env.OPENAI_API_KEY ||
-      "",
-    baseUrl: (
-      process.env.MASK_BASE_URL ||
-      process.env.OPENAI_BASE_URL ||
-      "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    ).replace(/\/+$/, ""),
+    apiKey: process.env.DASHSCOPE_API_KEY || process.env.MASK_API_KEY || process.env.OPENAI_API_KEY || "",
+    baseUrl: (process.env.MASK_BASE_URL || process.env.OPENAI_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, ""),
     model: process.env.MASK_MODEL || process.env.OPENAI_MODEL || "qwen-plus",
   };
 }
 
-const PROVIDER = "qwen";
+const PROVIDER = process.env.PROVIDER || "deepseek";
 const PORT = Number(process.env.PORT) || 4000;
-const MODEL = qwenConfig().model;
 
-function hasCredential(): boolean {
-  return Boolean(qwenConfig().apiKey);
+function providerConfig(): { apiKey: string; baseUrl: string; model: string; provider: string } {
+  if (PROVIDER === "qwen") {
+    const c = qwenConfig();
+    return { ...c, provider: "qwen" };
+  }
+  const c = deepseekConfig();
+  return { ...c, provider: "deepseek" };
 }
+
+const { apiKey: API_KEY, baseUrl: BASE_URL, model: MODEL } = providerConfig();
 
 // ============================================================
 // Utility functions (from 面具与本真, unchanged)
@@ -128,22 +138,21 @@ async function structuredCall<T>(opts: {
   user: string;
   schema: Record<string, unknown>;
 }): Promise<T> {
-  if (!hasCredential()) throw new Error("No model credentials configured");
+  if (!API_KEY) throw new Error(`No ${PROVIDER} API key configured — set ${PROVIDER.toUpperCase()}_API_KEY env var`);
 
-  // Qwen / OpenAI-compatible path (DashScope, OpenAI, etc.)
-  const cfg = qwenConfig();
+  // DeepSeek / Qwen / OpenAI-compatible path
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), CALL_TIMEOUT_MS);
   try {
-    const resp = await fetch(`${cfg.baseUrl}/chat/completions`, {
+    const resp = await fetch(`${BASE_URL}/chat/completions`, {
       method: "POST",
       signal: ctrl.signal,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.apiKey}`,
+        Authorization: `Bearer ${API_KEY}`,
       },
       body: JSON.stringify({
-        model: cfg.model,
+        model: MODEL,
         messages: [
           { role: "system", content: opts.system },
           { role: "user", content: opts.user },
@@ -323,12 +332,50 @@ interface GrantEntry {
 
 const grantStore = new Map<string, GrantEntry>();
 
-function getOrCreateGrant(callerId: string): { grant: CapabilityGrant; remainingUses: number; isNew: boolean } | null {
-  const key = `${PROVIDER}:${callerId}`;
+// ---- IP-based rate limiting ----
+// Prevents grant abuse: same IP can't create unlimited fake agent IDs
+// to exhaust free trial quota.
+function ipHash(req: express.Request): string {
+  const ip = (req.headers["x-forwarded-for"] as string) || req.socket?.remoteAddress || "unknown";
+  // Simple hash (not cryptographic — just enough to group same IPs)
+  let h = 0;
+  for (let i = 0; i < ip.length; i++) {
+    h = ((h << 5) - h + ip.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h).toString(36);
+}
+
+function grantKey(callerId: string, ip: string): string {
+  // Key = callerId + IP hash — same agent from same IP = same grant
+  // Different agents from same IP get different grants (limited by IP below)
+  return `${PROVIDER}:${callerId}:${ip}`;
+}
+
+// Track IP addresses to limit total grants per IP
+const ipGrantCount = new Map<string, number>();
+const MAX_GRANTS_PER_IP = 5;
+
+function getOrCreateGrant(callerId: string, ip: string): { grant: CapabilityGrant; remainingUses: number; isNew: boolean } | null {
+  const key = grantKey(callerId, ip);
+
+  // Check IP limit first
+  const ipCount = ipGrantCount.get(ip) || 0;
+  if (ipCount >= MAX_GRANTS_PER_IP && !grantStore.has(key)) {
+    return null; // IP has exhausted grant creation limit
+  }
+
   const existing = grantStore.get(key);
   if (existing) {
     return { grant: existing.grant, remainingUses: existing.remainingUses, isNew: false };
   }
+
+  // New grant — check IP limit
+  const newIpCount = ipGrantCount.get(ip) || 0;
+  if (newIpCount >= MAX_GRANTS_PER_IP) {
+    return null;
+  }
+  ipGrantCount.set(ip, newIpCount + 1);
+
   // Create new grant with FREE_TRIAL_LIMIT free calls
   const now = new Date().toISOString();
   const subject: AgentAddress = { kind: "agent", agentId: callerId };
@@ -337,8 +384,8 @@ function getOrCreateGrant(callerId: string): { grant: CapabilityGrant; remaining
   return { grant, remainingUses: FREE_TRIAL_LIMIT, isNew: true };
 }
 
-function consumeGrant(callerId: string): { ok: boolean; remainingUses: number; isFree: boolean } {
-  const key = `${PROVIDER}:${callerId}`;
+function consumeGrant(callerId: string, ip: string): { ok: boolean; remainingUses: number; isFree: boolean } {
+  const key = grantKey(callerId, ip);
   const entry = grantStore.get(key);
   if (!entry) return { ok: false, remainingUses: 0, isFree: false };
   if (entry.remainingUses > 0) {
@@ -346,13 +393,13 @@ function consumeGrant(callerId: string): { ok: boolean; remainingUses: number; i
     entry.totalUsed += 1;
     return { ok: true, remainingUses: entry.remainingUses, isFree: true };
   }
-  // Paid call (in production: check credit balance)
+  // Paid call (in production: check credit balance with SharedOS ledger)
   entry.totalUsed += 1;
   return { ok: true, remainingUses: 0, isFree: false };
 }
 
-function getGrantStatus(callerId: string): { remainingUses: number; totalUsed: number; isExpired: boolean } | null {
-  const key = `${PROVIDER}:${callerId}`;
+function getGrantStatus(callerId: string, ip: string): { remainingUses: number; totalUsed: number; isExpired: boolean } | null {
+  const key = grantKey(callerId, ip);
   const entry = grantStore.get(key);
   if (!entry) return null;
   return {
@@ -511,7 +558,7 @@ async function handleHealth(
       agent: AGENT_NAME,
       version: "0.1.0",
       ok: true,
-      hasKey: hasCredential(),
+      hasKey: Boolean(API_KEY),
       provider: PROVIDER,
       model: MODEL,
       endpoint: "/verify",
@@ -598,6 +645,8 @@ async function veritasPolicySource(): Promise<{ policy: { default: "deny" }; ver
 }
 
 // ---- GrantSource — 按 agent ID 提供 capability grants ----
+// Note: IP not available in grant source context; falls back to "kernel" IP hash.
+// This path is only used if SharedOS kernel is initialized (currently manual).
 async function veritasGrantSource(actor: { kind: string; agentId?: string; userId?: string; serviceId?: string }): Promise<CapabilityGrant[]> {
   let callerId: string;
   if (actor.kind === "agent" && actor.agentId) {
@@ -609,7 +658,7 @@ async function veritasGrantSource(actor: { kind: string; agentId?: string; userI
   } else {
     return [];
   }
-  const grant = getOrCreateGrant(callerId);
+  const grant = getOrCreateGrant(callerId, "kernel");
   if (!grant) return [];
   return [grant.grant];
 }
@@ -655,15 +704,16 @@ app.post("/verify", async (req, res) => {
     // Identify caller from headers (optional — human callers skip grant check)
     const callerAgentId = String(req.headers["x-agent-id"] || "");
     const callerKind = String(req.headers["x-agent-kind"] || "agent");
+    const callerIp = ipHash(req);
 
     // Grant check (skip for non-agent callers like browsers)
     let grantInfo: { remainingUses: number; totalUsed: number } | undefined;
     if (callerAgentId && callerKind === "agent") {
-      const existing = getGrantStatus(callerAgentId);
+      const existing = getGrantStatus(callerAgentId, callerIp);
       if (existing?.isExpired) {
         return res.status(402).json({ error: "Grant expired", message: "Contact Veritas for a new grant" });
       }
-      const consume = consumeGrant(callerAgentId);
+      const consume = consumeGrant(callerAgentId, callerIp);
       if (!consume.ok) {
         return res.status(402).json({ error: "No active grant", message: "Call /kernel/authorize first to get a grant" });
       }
@@ -676,7 +726,7 @@ app.post("/verify", async (req, res) => {
 
     // Refresh grant info after consumption
     if (callerAgentId && callerKind === "agent") {
-      const fresh = getGrantStatus(callerAgentId);
+      const fresh = getGrantStatus(callerAgentId, callerIp);
       if (fresh) grantInfo = { remainingUses: fresh.remainingUses, totalUsed: fresh.totalUsed };
     }
 
@@ -710,7 +760,7 @@ app.get("/health", (_req, res) => {
     agentId: AGENT_ID,
     version: "0.1.0",
     ok: true,
-    hasKey: hasCredential(),
+    hasKey: Boolean(API_KEY),
     provider: PROVIDER,
     model: MODEL,
     endpoint: "/verify",
@@ -1000,7 +1050,7 @@ app.listen(PORT, () => {
   console.log(`  sharednet: POST /sharednet/join, GET /sharednet/status`);
   console.log(`  cli      : npx veritas verify "claim"`);
   console.log(`  mcp      : npx veritas-mcp`);
-  if (!hasCredential()) {
+  if (!API_KEY) {
     console.log(`  ⚠ 未配置模型 key (provider="${PROVIDER}") — API 调用会返回错误\n`);
   } else {
     console.log(`  ✓ 模型 key 已加载 · provider=${PROVIDER} · model=${MODEL}\n`);
