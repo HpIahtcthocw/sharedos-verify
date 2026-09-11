@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: sharedos-verify
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node dist/server.js
+    envVars:
+      - key: PROVIDER
+        value: qwen
+      - key: DASHSCOPE_API_KEY
+        sync: false
+      - key: PORT
+        value: 10000

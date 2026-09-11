@@ -1,0 +1,44 @@
+{
+  "name": "sharedos-verify",
+  "version": "0.1.0",
+  "description": "Veritas — A2A evidence verification agent for SharedOS Arena. Evaluates claim credibility (0-100) with structured verdict, evidence, and risk factors.",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "veritas": "dist/cli.js",
+    "veritas-mcp": "dist/mcp.js"
+  },
+  "files": [
+    "dist",
+    "public",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsup src/server.ts src/cli.ts src/mcp.ts --format esm --out-dir dist --clean",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "tsx src/cli.ts verify",
+    "health": "tsx src/cli.ts health",
+    "mcp": "tsx src/mcp.ts"
+  },
+  "dependencies": {
+    "@aicoo/sharedos": "^0.1.0-alpha.5",
+    "@aicoo/sharedos-contracts": "^0.1.0-alpha.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "supertest": "^7.2.2",
+    "tsup": "^8.3.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}

@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Veritas — 证据验真 Agent · Demo</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #131926;
+      --panel-2: #1a2235;
+      --border: #263049;
+      --text: #e6ecf7;
+      --muted: #8a9bb8;
+      --accent: #7aa2ff;
+      --good: #5ee28a;
+      --warn: #ffb84d;
+      --bad: #ff6b6b;
+      --meh: #ffaa55;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+    .container { max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+    .header {
+      display: flex; align-items: center; gap: 18px;
+      margin-bottom: 32px;
+    }
+    .logo {
+      width: 56px; height: 56px; border-radius: 14px;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px; font-weight: 700; color: #fff;
+      box-shadow: 0 8px 24px rgba(122,162,255,0.25);
+    }
+    .header-text h1 { margin: 0; font-size: 28px; letter-spacing: -0.5px; }
+    .header-text p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    textarea, input[type="text"] {
+      width: 100%;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      color: var(--text);
+      font-size: 15px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    textarea:focus, input[type="text"]:focus { border-color: var(--accent); }
+    textarea { min-height: 80px; resize: vertical; }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 600px) { .row { grid-template-columns: 1fr; } }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 12px 24px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 14px;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .examples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .chip {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 13px;
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .chip:hover { border-color: var(--accent); }
+
+    .result { display: none; }
+    .result.show { display: block; }
+
+    .score-row {
+      display: flex; align-items: center; gap: 18px;
+      flex-wrap: wrap;
+    }
+    .score-circle {
+      width: 96px; height: 96px; border-radius: 50%;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-size: 32px; font-weight: 700;
+      border: 4px solid var(--border);
+      flex-shrink: 0;
+    }
+    .score-label { font-size: 11px; color: var(--muted); font-weight: 400; margin-top: -4px; }
+    .verdict-badge {
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 600;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+    }
+
+    .list { margin: 10px 0 0; padding: 0; list-style: none; }
+    .list li {
+      padding: 10px 14px;
+      background: var(--panel-2);
+      border-radius: 10px;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+    .list li::before {
+      content: "•";
+      color: var(--accent);
+      font-weight: 700;
+      margin-right: 8px;
+    }
+
+    .meta { font-size: 13px; color: var(--muted); margin-top: 14px; }
+
+    .pricing {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+    }
+    @media (max-width: 600px) { .pricing { grid-template-columns: 1fr; } }
+    .price-card {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+    }
+    .price-card h3 { margin: 0 0 6px; font-size: 14px; color: var(--muted); }
+    .price-card .amount { font-size: 22px; font-weight: 700; }
+    .price-card .desc { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    .footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 40px;
+    }
+    .footer a { color: var(--accent); text-decoration: none; }
+
+    .error {
+      background: rgba(255,107,107,0.1);
+      border: 1px solid var(--bad);
+      color: var(--bad);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-top: 14px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">V</div>
+      <div class="header-text">
+        <h1>Veritas · 证据验真 Agent</h1>
+        <p>SharedOS Arena 的验真安全网 · 10 秒拿到可信度评分 + 证据 + 风险点</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🔍 验真</h2>
+      <label for="claim">断言 / Claim</label>
+      <textarea id="claim" placeholder='例如：火星上有液态水'></textarea>
+
+      <div class="row" style="margin-top:14px">
+        <div>
+          <label for="context">参考材料 / Context（可选）</label>
+          <input type="text" id="context" placeholder='例如：NASA 2024年确认火星南极有液态水湖' />
+        </div>
+        <div>
+          <label>快速示例</label>
+          <div class="examples">
+            <span class="chip" data-claim="地球是平的">地球是平的</span>
+            <span class="chip" data-claim="AI将取代所有程序员">AI将取代所有程序员</span>
+            <span class="chip" data-claim="火星上有液态水">火星上有液态水</span>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn" id="verifyBtn" onclick="doVerify()">
+        <span>⚡</span> 验真 · 10 秒出结果
+      </button>
+
+      <div id="errorBox"></div>
+
+      <div class="result" id="result">
+        <div class="score-row">
+          <div class="score-circle" id="scoreCircle">
+            <span id="scoreNum">--</span>
+            <span class="score-label">可信度</span>
+          </div>
+          <div>
+            <div class="verdict-badge" id="verdictBadge">--</div>
+            <div class="meta" id="metaInfo"></div>
+          </div>
+        </div>
+
+        <h2 style="margin-top:24px">📚 证据</h2>
+        <ul class="list" id="evidenceList"></ul>
+
+        <h2 style="margin-top:20px">⚠️ 风险因素</h2>
+        <ul class="list" id="riskList"></ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>💰 定价</h2>
+      <div class="pricing">
+        <div class="price-card">
+          <h3>首次试用</h3>
+          <div class="amount">免费</div>
+          <div class="desc">前 3 次调用完全免费</div>
+        </div>
+        <div class="price-card">
+          <h3>持续调用</h3>
+          <div class="amount">1 credit</div>
+          <div class="desc">每次调用 · 确保积分计入排名</div>
+        </div>
+        <div class="price-card">
+          <h3>响应时间</h3>
+          <div class="amount">~10s</div>
+          <div class="desc">结构化报告 · 证据 + 风险点</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🚀 三种调用方式</h2>
+      <ul class="list">
+        <li><strong>HTTP API</strong> — <code>POST /verify</code>，任何语言都能调</li>
+        <li><strong>CLI</strong> — <code>npx veritas verify "claim"</code></li>
+        <li><strong>MCP</strong> — <code>npx veritas-mcp</code>，Claude Desktop / Code 直连</li>
+      </ul>
+    </div>
+
+    <div class="footer">
+      Veritas · SharedOS Hackathon 2025 · Built with <a href="https://github.com/your-username/sharedos-verify" target="_blank">GitHub</a>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+    const btn = document.getElementById('verifyBtn');
+    const errorBox = document.getElementById('errorBox');
+
+    document.querySelectorAll('.chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        document.getElementById('claim').value = chip.dataset.claim;
+      });
+    });
+
+    async function doVerify() {
+      const claim = document.getElementById('claim').value.trim();
+      const context = document.getElementById('context').value.trim();
+      errorBox.innerHTML = '';
+      document.getElementById('result').classList.remove('show');
+
+      if (!claim) {
+        errorBox.innerHTML = '<div class="error">请输入一个断言</div>';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳</span> 验真中...';
+
+      try {
+        const resp = await fetch(`${API_BASE}/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ claim, context }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+
+        const score = data.credibility ?? 0;
+        const scoreColor = score >= 80 ? 'var(--good)' : score >= 60 ? 'var(--warn)' : score >= 30 ? 'var(--meh)' : 'var(--bad)';
+        document.getElementById('scoreCircle').style.borderColor = scoreColor;
+        document.getElementById('scoreCircle').style.color = scoreColor;
+        document.getElementById('scoreNum').textContent = score;
+
+        const verdictMap = { '可信': '✅ ', '存疑': '🤔 ', '不可信': '❌ ', '无法判定': '⚠️ ' };
+        document.getElementById('verdictBadge').textContent = (verdictMap[data.verdict] || '') + data.verdict;
+
+        const evList = document.getElementById('evidenceList');
+        evList.innerHTML = (data.evidence || []).map(e => `<li>${escapeHtml(e)}</li>`).join('') || '<li>无</li>';
+
+        const rkList = document.getElementById('riskList');
+        rkList.innerHTML = (data.risk_factors || []).map(r => `<li>${escapeHtml(r)}</li>`).join('') || '<li>无</li>';
+
+        document.getElementById('result').classList.add('show');
+      } catch (err) {
+        errorBox.innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>⚡</span> 验真 · 10 秒出结果';
+      }
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+  </script>
+</body>
+</html>

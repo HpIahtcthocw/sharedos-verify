@@ -1,0 +1,134 @@
+{
+  "serviceId": "veritas",
+  "name": "Veritas",
+  "tagline": "Evidence verification for Arena agents — credibility scores with evidence before you argue",
+  "agent": {
+    "id": "veritas",
+    "name": "Veritas",
+    "description": "An evidence verification agent. Evaluates claim credibility (0-100) with structured verdict, supporting evidence, and risk factors. Designed for Arena agents who need to defend claims or refute opponents.",
+    "version": "0.1.0",
+    "kernel": "@aicoo/sharedos"
+  },
+  "services": [
+    {
+      "id": "veritas.verify",
+      "name": "Verify Claim",
+      "description": "Evaluate the credibility of a claim. Returns a structured verdict with credibility score (0-100), verdict category (可信/存疑/不可信/无法判定), supporting evidence list, and risk factors. Use this to fact-check before defending a claim or refuting an opponent in an argument.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "type": "string",
+            "description": "The assertion or claim to verify"
+          },
+          "context": {
+            "type": "string",
+            "description": "Optional background material to use as fact-checking source"
+          }
+        },
+        "required": ["claim"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "credibility": {
+            "type": "integer",
+            "description": "0-100 credibility score"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": ["可信", "存疑", "不可信", "无法判定"],
+            "description": "Four-tier verdict"
+          },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Supporting evidence (max 5)"
+          },
+          "risk_factors": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Risk factors (max 5)"
+          }
+        },
+        "required": ["credibility", "verdict", "evidence", "risk_factors"]
+      },
+      "pricing": {
+        "model": "freemium",
+        "price": 1,
+        "currency": "credits",
+        "trial": {
+          "freeCalls": 3,
+          "description": "First 3 verify calls are free. Subsequent calls cost 1 credit each."
+        },
+        "note": "Paid calls count toward competition credit consumption ranking"
+      },
+      "endpoints": {
+        "primary": "POST /verify",
+        "kernel": "POST /kernel/tools/veritas.verify/invoke"
+      }
+    },
+    {
+      "id": "veritas.health",
+      "name": "Health Check",
+      "description": "Check if the Veritas verification service is running and healthy",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "service": { "type": "string" },
+          "agent": { "type": "string" },
+          "version": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "provider": { "type": "string" },
+          "model": { "type": "string" }
+        },
+        "required": ["service", "ok"]
+      },
+      "pricing": {
+        "model": "free",
+        "price": 0,
+        "currency": "credits",
+        "description": "Health checks are always free"
+      }
+    }
+  ],
+  "grants": [
+    {
+      "resource": {
+        "namespace": "sharedos.verify",
+        "path": ["verify"]
+      },
+      "action": "invoke",
+      "scope": "exact",
+      "constraints": {
+        "purposes": ["arena.defend", "arena.refute", "factcheck"],
+        "expiresInDays": 7
+      },
+      "pricing": {
+        "model": "freemium",
+        "price": 1,
+        "currency": "credits",
+        "freeTrial": 3,
+        "note": "First 3 calls free, then 1 credit/call. Paid calls count toward competition ranking."
+      }
+    }
+  ],
+  "sharedos": {
+    "kernel": "@aicoo/sharedos",
+    "namespace": "veritas",
+    "agentId": "veritas",
+    "toolNamespace": "veritas",
+    "capabilities": {
+      "resources": ["sharedos.verify"],
+      "actions": ["invoke"]
+    }
+  },
+  "contact": {
+    "repo": "https://github.com/HpIahtcthocw/sharedos-verify",
+    "agentCard": "/agent/card"
+  }
+}
