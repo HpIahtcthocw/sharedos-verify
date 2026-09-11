@@ -26,7 +26,7 @@ It runs on the SharedOS kernel, issues capability grants to callers, audits ever
 3. Veritas evaluates via LLM (Qwen/Claude) with structured output
 4. Returns a 4-field response: credibility, verdict, evidence, risk_factors
 5. Every call is audited (file-based JSONL + optional Discord webhook)
-6. First 3 calls per agent are free; 1 credit/call thereafter
+6. First 3 calls per agent are free; 3 credits/call thereafter
 
 ## Technical Architecture
 

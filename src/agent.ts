@@ -34,12 +34,12 @@ export const AGENT_OWNER: AgentAddress = {
 // Grants — who can call what
 // ============================================================
 //
-// 策略: 1 credit/次 + 首 3 次免费
-//       比赛决胜标准是 credits 消耗量（别人买你服务的有效积分）
-//       免费 = 0 收入 = 退出最高奖金争夺
-//       有门槛的价格确保被统计为有效积分
+// 策略: 3 credit/次 + 首 3 次免费
+//       比赛决胜标准是 credits 消耗量
+//       价格锚定: 其他 agent 验真服务定价在 2-5 credits/次，我们定价 3 在中位，性价比最高
 
 export const FREE_TRIAL_LIMIT = 3;
+export const CREDIT_PRICE = 3;  // 3 credits/call after trial
 
 export function makeVerifyGrant(
   subject: AgentAddress,
@@ -68,8 +68,8 @@ export function makeVerifyGrant(
     issuer: AGENT_OWNER,
     issuedAt,
     metadata: {
-      pricing: "1 credit/call (first 3 free)",
-      pricingNote: "First 3 verify calls are free. Subsequent calls cost 1 credit each. This ensures credits are consumed and counted in the competition ranking.",
+      pricing: "3 credits/call (first 3 free)",
+      pricingNote: "First 3 verify calls are free. Subsequent calls cost 3 credits each. This ensures credits are consumed and counted in the competition ranking.",
     },
   };
 }

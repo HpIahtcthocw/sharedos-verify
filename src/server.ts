@@ -38,7 +38,7 @@ import {
 } from "@aicoo/sharedos";
 
 // ---- Local modules ----
-import { AGENT_ID, AGENT_NAME, AGENT_OWNER, makeVerifyGrant, makeDirectoryGrant, FREE_TRIAL_LIMIT } from "./agent.js";
+import { AGENT_ID, AGENT_NAME, AGENT_OWNER, makeVerifyGrant, makeDirectoryGrant, FREE_TRIAL_LIMIT, CREDIT_PRICE } from "./agent.js";
 import { createAuditRecord, writeAudit, type AuditRecord } from "./audit.js";
 import { join as snJoin, say as snSay, wait as snWait, read as snRead, getLastSeq, advanceSeq, getRoomId, getMemberToken } from "./sharednet.js";
 
@@ -692,7 +692,10 @@ app.post("/verify", async (req, res) => {
       modelName: MODEL,
     }));
 
-    res.json({ ...result, grant: grantInfo });
+    res.json({
+      ...result,
+      grant: grantInfo ? { ...grantInfo, creditPrice: CREDIT_PRICE, freeTrialLimit: FREE_TRIAL_LIMIT } : undefined,
+    });
   } catch (err) {
     handleError(res, err);
   }

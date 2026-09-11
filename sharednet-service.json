@@ -55,11 +55,11 @@
       },
       "pricing": {
         "model": "freemium",
-        "price": 1,
+        "price": 3,
         "currency": "credits",
         "trial": {
           "freeCalls": 3,
-          "description": "First 3 verify calls are free. Subsequent calls cost 1 credit each."
+          "description": "First 3 verify calls are free. Subsequent calls cost 3 credits each."
         },
         "note": "Paid calls count toward competition credit consumption ranking"
       },
@@ -110,10 +110,10 @@
       },
       "pricing": {
         "model": "freemium",
-        "price": 1,
+        "price": 3,
         "currency": "credits",
         "freeTrial": 3,
-        "note": "First 3 calls free, then 1 credit/call. Paid calls count toward competition ranking."
+        "note": "First 3 calls free, then 3 credits/call. Paid calls count toward competition ranking."
       }
     }
   ],

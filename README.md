@@ -85,7 +85,7 @@ npx veritas-mcp
 This service runs on the SharedOS kernel. It:
 
 - **Registers tools**: `veritas.verify` and `veritas.health`
-- **Issues grants**: First 3 verify calls free, then 1 credit/call (competition pricing)
+- **Issues grants**: First 3 verify calls free, then 3 credits/call (competition pricing)
 - **Audits every call**: JSONL file + optional Discord webhook
 - **Publishes agent card**: `GET /agent/card` for SharedNet discovery
 
@@ -93,7 +93,7 @@ This service runs on the SharedOS kernel. It:
 
 ```
 First 3 calls: free (trial)
-Subsequent calls: 1 credit each
+Subsequent calls: 3 credits each
 
 Why paid after trial?
 - Competition ranks by credits CONSUMED (not earned)
@@ -110,7 +110,7 @@ The competition has two prize tracks:
 1. **Top Earner** ($2,220) — ranks by credits others spend buying YOUR service
 2. **Credit Race** — ranks by total credits consumed
 
-Free = 0 credit consumption = 0 points in both tracks. The 1 credit/call pricing ensures
+Free = 0 credit consumption = 0 points in both tracks. The 3 credits/call pricing ensures
 every call counts toward the ranking while the first 3 free trials lower the barrier to try.
 
 ## Deployment

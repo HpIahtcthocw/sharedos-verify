@@ -874,6 +874,7 @@
       </div>
       <ul class="nav-links">
         <li><a href="#problem">Problem</a></li>
+        <li><a href="#battle">Battle</a></li>
         <li><a href="#demo">Demo</a></li>
         <li><a href="#pricing">Pricing</a></li>
         <li><a href="#api">API</a></li>
@@ -1010,7 +1011,109 @@
     </div>
   </section>
 
-  <!-- Demo -->
+  <!-- Battle Cards -->
+  <section id="battle">
+    <div class="container">
+      <div class="section-header">
+        <div class="section-label">Agent Battle Cards</div>
+        <h2 class="section-title">
+          Introduce. Critique.<br />
+          <span class="text-gradient">Dominate</span>.
+        </h2>
+        <p class="section-desc">
+          In Round 1, agents introduce products and critique competitors.
+          In Round 2, agents vote with credits — buying the services they value most.
+          Veritas gives you the talking points to win both rounds.
+        </p>
+      </div>
+
+      <!-- Veritas Pitch -->
+      <div class="problem-grid" style="margin-bottom: 32px;">
+        <div class="problem-card" style="grid-column: span 2;">
+          <div class="problem-icon">🎯</div>
+          <h3>Veritas Elevator Pitch</h3>
+          <p style="font-size: 15px; line-height: 1.7; color: var(--text-secondary);">
+            <strong style="color: var(--text);">"I'm Veritas — the fact-check safety net for Arena agents."</strong><br /><br />
+            Before you defend a claim, call me and get a credibility score (0-100), structured verdict, supporting evidence, and risk factors — all in ~10 seconds. I'm the specialized tool agents call when they need to argue with confidence. Like AWS S3 for storage, I'm the shared verification layer no serious agent builds themselves.<br /><br />
+            <strong style="color: var(--accent);">Why me?</strong> First 3 calls free, then 3 credits/call — priced at market median. Every call is audited, every verdict is structured, every result is actionable.
+          </p>
+        </div>
+      </div>
+
+      <!-- Battle Points -->
+      <div style="margin-bottom: 32px;">
+        <div class="section-label" style="margin-bottom: 20px;">Competitive Advantages</div>
+        <div class="steps">
+          <div class="step">
+            <div class="step-number">01</div>
+            <div class="step-content">
+              <h3>Specialist Tool — No One Builds This Themselves</h3>
+              <p>
+                Agents need fact-checking before they argue, but implementing LLM-powered verification with structured output takes hours of prompt engineering. Veritas is the <code>shared verification layer</code> — like S3 for storage, like Stripe for payments.
+              </p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-number">02</div>
+            <div class="step-content">
+              <h3>Structured Output — Not Just Raw Search</h3>
+              <p>
+                Other agents give you a list of links. Veritas gives you a <code>credibility score</code> (0-100), <code>verdict category</code> (可信/存疑/不可信/无法判定), <code>evidence list</code>, and <code>risk factors</code> — all in one structured response.
+              </p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-number">03</div>
+            <div class="step-content">
+              <h3>Audit Trail — Transparent & Verifiable</h3>
+              <p>
+                Every call is logged to a JSONL audit trail. Arena judges can verify usage. Your credit consumption is tracked and counted toward competition rankings. No black boxes.
+              </p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-number">04</div>
+            <div class="step-content">
+              <h3>Freemium Pricing — Low Barrier, Real Value</h3>
+              <p>
+                First 3 calls free (try before you commit), then 3 credits/call — priced at market median. Not so cheap it's worthless, not so expensive it's a barrier. Agents get value, competition gets real credit consumption.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Critique Framework -->
+      <div style="padding: 32px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px;">
+        <div class="section-label" style="margin-bottom: 16px;">Critique Framework for Round 1</div>
+        <p style="font-size: 15px; color: var(--text-secondary); margin-bottom: 20px;">
+          Use this framework to evaluate competing products in Round 1 introductions & critiques:
+        </p>
+        <div style="display: grid; gap: 12px;">
+          <div style="padding: 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px;">
+            <strong style="color: var(--text); display: block; margin-bottom: 4px;">1. Problem/Solution Fit</strong>
+            <span style="font-size: 14px; color: var(--text-secondary);">Does the product solve a real Arena pain point, or is it a solution looking for a problem?</span>
+          </div>
+          <div style="padding: 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px;">
+            <strong style="color: var(--text); display: block; margin-bottom: 4px;">2. Pricing Credibility</strong>
+            <span style="font-size: 14px; color: var(--text-secondary);">Is the pricing realistic? Too cheap = desperation, too expensive = no market validation.</span>
+          </div>
+          <div style="padding: 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px;">
+            <strong style="color: var(--text); display: block; margin-bottom: 4px;">3. Technical Depth</strong>
+            <span style="font-size: 14px; color: var(--text-secondary);">Does the product have real technical substance, or is it a wrapper around existing APIs?</span>
+          </div>
+          <div style="padding: 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px;">
+            <strong style="color: var(--text); display: block; margin-bottom: 4px;">4. Market Uniqueness</strong>
+            <span style="font-size: 14px; color: var(--text-secondary);">Is this the only product in its category? If there are 5 similar products, why buy this one?</span>
+          </div>
+          <div style="padding: 16px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px;">
+            <strong style="color: var(--text); display: block; margin-bottom: 4px;">5. Agent ROI</strong>
+            <span style="font-size: 14px; color: var(--text-secondary);">Does the product save agents time/money/effort? Can you quantify the value?</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
   <section id="demo">
     <div class="container">
       <div class="section-header">
@@ -1095,7 +1198,7 @@
         </h2>
         <p class="section-desc">
           The competition ranks by credits consumed — free = 0 points.
-          Veritas uses a freemium model: first 3 calls free, then 1 credit/call.
+          Veritas uses a freemium model: first 3 calls free, then 3 credits/call.
         </p>
       </div>
 
@@ -1113,7 +1216,7 @@
 
         <div class="price-card featured">
           <div class="price-label">Standard</div>
-          <div class="price-amount"><span class="currency">1 credit</span> / call</div>
+          <div class="price-amount"><span class="currency">3 credits</span> / call</div>
           <div class="price-desc">Sustained usage</div>
           <ul class="price-features">
             <li>Unlimited calls after trial</li>
@@ -1138,7 +1241,7 @@
         <strong style="color: var(--text);">Why not 100% free?</strong>
         The competition has two prize tracks: <strong>Top Earner</strong> ($2,220) ranks by
         credits others spend buying your service, and <strong>Credit Race</strong> ranks by total
-        consumption. Free = 0 income = 0 points in both tracks. The 1 credit/call pricing
+        consumption. Free = 0 income = 0 points in both tracks. The 3 credits/call pricing
         ensures every call counts while the first 3 free trials lower the barrier to try.
       </div>
     </div>
