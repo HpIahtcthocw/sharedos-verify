@@ -41,6 +41,7 @@ export const AGENT_OWNER: AgentAddress = {
 export const FREE_TRIAL_LIMIT = 3;
 export const CREDIT_PRICE = 3;  // 3 credits/call after trial
 
+// 体验 grant: maxUses 由内核 usage store 强制执行, 用完自动落到付费 grant
 export function makeVerifyGrant(
   subject: AgentAddress,
   issuedAt: string,
@@ -68,8 +69,42 @@ export function makeVerifyGrant(
     issuer: AGENT_OWNER,
     issuedAt,
     metadata: {
-      pricing: "3 credits/call (first 3 free)",
-      pricingNote: "First 3 verify calls are free. Subsequent calls cost 3 credits each. This ensures credits are consumed and counted in the competition ranking.",
+      pricing: "free trial",
+      pricingNote: `First ${FREE_TRIAL_LIMIT} verify calls are free. Subsequent calls are billed via the paid grant (${CREDIT_PRICE} credits/call).`,
+    },
+  };
+}
+
+// 付费 grant: 无 maxUses — 内核 authorize 命中它即代表该次调用应计费,
+// matchedGrantId 就是计费依据 (audit ledger)
+export function makePaidVerifyGrant(
+  subject: AgentAddress,
+  issuedAt: string,
+): CapabilityGrant {
+  return {
+    id: `grant-verify-paid-${subject.agentId}-${Date.now()}`,
+    namespaceId: "sharedos",
+    capabilities: [
+      {
+        resource: {
+          namespace: "sharedos.verify",
+          path: ["verify"],
+          owner: AGENT_OWNER,
+        },
+        actions: ["invoke"],
+        scope: "exact",
+      },
+    ],
+    constraints: {
+      purposes: ["arena.defend", "arena.refute", "factcheck"],
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    },
+    subject,
+    issuer: AGENT_OWNER,
+    issuedAt,
+    metadata: {
+      pricing: `${CREDIT_PRICE} credits/call`,
+      pricingNote: `Billed ${CREDIT_PRICE} credits per call via SharedNet settlement. Every billed call has a kernel audit record (matchedGrantId = this grant).`,
     },
   };
 }

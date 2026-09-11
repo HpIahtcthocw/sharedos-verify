@@ -22,22 +22,22 @@ It runs on the SharedOS kernel, issues capability grants to callers, audits ever
 ## How it works
 
 1. An agent in the Arena needs to defend a claim or refute an opponent
-2. It calls `veritas.verify` with the claim (and optional context)
-3. Veritas evaluates via LLM (Qwen/Claude) with structured output
+2. It calls `veritas.verify` with the claim (and optional context) — via `POST /verify` (direct), `POST /kernel/tools/veritas.verify/invoke` (kernel), CLI, or MCP
+3. Veritas evaluates via LLM (DeepSeek/Qwen) with structured output
 4. Returns a 4-field response: credibility, verdict, evidence, risk_factors
-5. Every call is audited (file-based JSONL + optional Discord webhook)
-6. First 3 calls per agent are free; 3 credits/call thereafter
+5. Every kernel call is audited: canonical `AuditEvent` records in `audit/kernel-audit-*.jsonl` (version/type/outcome/actor/purpose/grantId) + optional Discord webhook
+6. First 3 calls per agent are free (kernel-enforced trial grant); 3 credits/call thereafter (paid grant — `matchedGrantId` is the billing evidence)
 
 ## Technical Architecture
 
-- **SharedOS Kernel**: Full integration with `@aicoo/sharedos` — grant source, audit sink, tool registry, agent card
-- **LLM Backend**: Qwen (DashScope) or Claude, with JSON Schema structured output
+- **SharedOS Kernel**: real `SharedOSKernel` from `@aicoo/sharedos` — `registerTool` + `authorize` + `listTools` + `invokeTool`, deny-by-default, kernel usage store enforces the free trial, kernel audit sink writes canonical events
+- **LLM Backend**: DeepSeek (SiliconFlow, default) or Qwen (DashScope)
 - **Three deployment shapes**:
   - Self-hosted: `npm start` on localhost
   - Cloud-hosted: Render deployment (free tier)
-  - CLI/MCP: `npx veritas verify` or `npx veritas-mcp`
-- **Audit**: File-based JSONL + optional Discord webhook
-- **Grant system**: First 3 calls free/agent, then 1 credit/call, 7-day expiry
+  - CLI/MCP: `node dist/cli.js verify "..."` or `node dist/mcp.js` (also exposed via package `bin`)
+- **Audit**: kernel `AuditEvent` JSONL (`audit/kernel-audit-*.jsonl`) + service verdict log (`audit/audit-*.jsonl`) + optional Discord webhook
+- **Grant system**: trial grant (maxUses: 3, purposes: arena.defend/arena.refute/factcheck, 7-day expiry) + paid grant (3 credits/call)
 
 ## Reused components
 
@@ -45,23 +45,51 @@ The core verification prompt and structured output logic is adapted from the [Sp
 
 ## Links
 
-- **GitHub**: https://github.com/HpIahtcthocw/sharedos-verify
-- **Live Demo**: https://sharedos-verify.onrender.com
+<!-- 部署完成后逐项确认可访问再提交 -->
+
+- **GitHub**: https://github.com/HpIahtcthocw/sharedos-verify <!-- TODO: 建仓 push 后生效 -->
+- **Live Demo**: https://sharedos-verify.onrender.com <!-- TODO: Render 部署后生效 -->
 - **Agent Card**: https://sharedos-verify.onrender.com/agent/card
 - **Health**: https://sharedos-verify.onrender.com/health
+- **Kernel usage ledger**: https://sharedos-verify.onrender.com/kernel/usage
 
 ## Try it
 
 ```bash
 curl -X POST https://sharedos-verify.onrender.com/verify \
   -H "Content-Type: application/json" \
+  -H "X-Agent-Id: <your-agent-id>" \
   -d '{"claim": "The Earth is flat"}'
+
+# Kernel surface (SharedOS authorize → invoke → audit)
+curl -X POST https://sharedos-verify.onrender.com/kernel/authorize \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Id: <your-agent-id>" -H "X-Purpose: arena.defend" \
+  -d '{"resource":{"namespace":"sharedos.verify","path":["verify"]},"action":"invoke"}'
 ```
 
-## Agent Node ID
+## SharedNet Node ID
 
-`veritas` (registered on SharedNet via /agent/card)
+<!-- TODO: 向 Discord #arena-support 索取 tenant ID / owner address,
+     并按组织者流程注册 SharedNet 节点后, 把真实 node ID 填在这里 -->
+
+- **Node ID**: _pending registration via #arena-support_
+- **Purpose string**: `arena.defend` (primary; also accepts `arena.refute`, `factcheck`)
+- **Agent address**: `{ "kind": "agent", "agentId": "veritas" }`
+- **Audit records for organizers**: `audit/kernel-audit-*.jsonl` (canonical SharedOS AuditEvent), also served at `GET /kernel/usage`
+
+## Services (credit-priced)
+
+| Service | What it does | Input | Output | Price |
+|---|---|---|---|---|
+| `veritas.verify` | Evidence verification: evaluates a claim's credibility | `{ claim, context? }` | `{ credibility: 0-100, verdict, evidence[], risk_factors[] }` | 3 credits/call (first 3 free) |
+| `veritas.health` | Service health check | `{}` | `{ service, ok, provider, model }` | free |
+
+Callable via: `POST /verify`, `POST /kernel/tools/veritas.verify/invoke`, MCP (`veritas-mcp`), or CLI. Responds well within the 5-minute delivery cap (typical latency 3-10s).
 
 ## Team
 
 Solo developer + Claude Code (AI teammate)
+
+<!-- TODO: 填写队长 Discord 用户名 (Devpost 提交第 6 项) -->
+- **Captain Discord username**: _fill in before submitting_

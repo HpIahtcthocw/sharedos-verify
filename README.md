@@ -1,6 +1,6 @@
 # Veritas — A2A Evidence Verification Agent
 
-**SharedOS Hackathon 2025 · Arena Submission**
+**SharedOS Weekly Hackathon 2026 · Arena Submission** (Sep 11–13, 2026)
 
 Veritas is an evidence verification agent that evaluates the credibility of claims and returns structured verdicts with supporting evidence and risk factors. Built for the SharedOS Arena, where agents argue, defend, and refute — and need a cheap, fast way to fact-check before they speak.
 
@@ -82,36 +82,31 @@ npx veritas-mcp
 
 ## SharedOS Kernel Integration
 
-This service runs on the SharedOS kernel. It:
+This service runs a **real `SharedOSKernel`** from `@aicoo/sharedos` (verified on Node 22). Every call through `/kernel/*` completes the kernel's authorize → invoke → audit loop:
 
-- **Registers tools**: `veritas.verify` and `veritas.health`
-- **Issues grants**: First 3 verify calls free, then 3 credits/call (competition pricing)
-- **Audits every call**: JSONL file + optional Discord webhook
+- **Registers tools**: `kernel.registerTool()` for `veritas.verify` and `veritas.health`
+- **Real authorization**: `POST /kernel/authorize` → `kernel.authorize()` — deny-by-default; unknown callers, unlisted purposes, or foreign resources are refused with `no_matching_grant`
+- **Capability discovery**: `GET /kernel/tools` → `kernel.listTools()` — callers without a matching grant cannot even see the tools
+- **Audited invocation**: `POST /kernel/tools/:name/invoke` → `kernel.invokeTool()` — usage metering (`maxUses`) and canonical audit events written by the kernel to `audit/kernel-audit-*.jsonl`
+- **Issues grants**: each caller gets a trial grant (`maxUses: 3`, enforced by the kernel usage store) plus a paid grant (`3 credits/call`) — `matchedGrantId` in the audit ledger distinguishes free from billable calls
 - **Publishes agent card**: `GET /agent/card` for SharedNet discovery
+- **Usage ledger**: `GET /kernel/usage`
 
 ### Grant System
 
 ```
-First 3 calls: free (trial)
-Subsequent calls: 3 credits each
+First 3 calls: free (trial grant, kernel-enforced maxUses)
+Subsequent calls: 3 credits each (paid grant — matchedGrantId = billable)
 
-Why paid after trial?
-- Competition ranks by credits CONSUMED (not earned)
-- Free = 0 income = eliminated from top prize
-- Low barrier to try, then paid calls generate real consumption
-
-Grant purposes: arena.defend, arena.refute, factcheck
+Grant purposes: arena.defend, arena.refute, factcheck (anything else → denied)
 Grant expiry: 7 days
 ```
 
 ### Why Not 100% Free?
 
-The competition has two prize tracks:
-1. **Top Earner** ($2,220) — ranks by credits others spend buying YOUR service
-2. **Credit Race** — ranks by total credits consumed
-
-Free = 0 credit consumption = 0 points in both tracks. The 3 credits/call pricing ensures
-every call counts toward the ranking while the first 3 free trials lower the barrier to try.
+Top Earner ($2,200) ranks by credits others spend buying YOUR service.
+Free = 0 income. The 3-credit price keeps every call countable while the
+3 free trials lower the barrier to try.
 
 ## Deployment
 
@@ -168,10 +163,10 @@ sharedos-verify/
 
 ## Tech Stack
 
-- **Runtime**: Node.js 18+, TypeScript
+- **Runtime**: Node.js 20.11+ (SDK requirement), TypeScript
 - **LLM**: DeepSeek (SiliconFlow) or Qwen (DashScope)
 - **Framework**: Express
-- **Agent Platform**: SharedOS SDK (`@aicoo/sharedos`)
+- **Agent Platform**: SharedOS SDK (`@aicoo/sharedos`) — real kernel integration
 - **Testing**: Vitest
 - **Deployment**: Render (free tier)
 

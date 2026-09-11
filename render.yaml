@@ -3,12 +3,25 @@ services:
     name: sharedos-verify
     runtime: node
     plan: free
+    healthCheckPath: /health
     buildCommand: npm install && npm run build
     startCommand: node dist/server.js
     envVars:
+      - key: NODE_VERSION
+        value: 22.18.0
       - key: PROVIDER
-        value: qwen
-      - key: DASHSCOPE_API_KEY
+        value: deepseek
+      - key: DEEPSEEK_API_KEY
         sync: false
+      - key: DEEPSEEK_MODEL
+        value: deepseek-ai/DeepSeek-V2.5
       - key: PORT
         value: 10000
+      # Arena 房间自动验真 (可选, 部署后在 Dashboard 填)
+      - key: SHAREDNET_ROOM_ID
+        sync: false
+      - key: SHAREDNET_TOKEN
+        sync: false
+      # 审计镜像到 Discord (可选)
+      - key: DISCORD_AUDIT_WEBHOOK
+        sync: false

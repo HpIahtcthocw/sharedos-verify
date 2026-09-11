@@ -25,32 +25,34 @@ import express from "express";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
-// ---- SharedOS SDK (types only — runtime kernel replaced with
-//      manual implementations that are type-compatible with the protocol) ----
+// ---- SharedOS SDK — 真内核 (SharedOSKernel 在 Node 22 下经伞形包导入验证可用) ----
 import {
   AgentAddress,
   CapabilityGrant,
   ToolDefinition,
-  ToolHandler,
   ToolCall,
   type ToolResult as SdkToolResult,
+  type JsonValue,
+  type JsonObject,
   AccessContext,
+  type AuditEvent,
+  type AuditSink,
+  type ToolHandler,
+  SharedOSKernel,
+  CapabilityAuthorizer,
+  InMemoryGrantUsageStore,
 } from "@aicoo/sharedos";
 
 // ---- Local modules ----
-import { AGENT_ID, AGENT_NAME, AGENT_OWNER, makeVerifyGrant, makeDirectoryGrant, FREE_TRIAL_LIMIT, CREDIT_PRICE } from "./agent.js";
-import { createAuditRecord, writeAudit, type AuditRecord } from "./audit.js";
+import { AGENT_ID, AGENT_NAME, AGENT_OWNER, makeVerifyGrant, makePaidVerifyGrant, makeDirectoryGrant, FREE_TRIAL_LIMIT, CREDIT_PRICE } from "./agent.js";
+import { createAuditRecord, writeAudit, writeKernelEvent, type AuditRecord } from "./audit.js";
 import { join as snJoin, say as snSay, wait as snWait, read as snRead, getLastSeq, advanceSeq, getRoomId, getMemberToken } from "./sharednet.js";
 
-// Our local ToolResult union (extends what the SDK requires at runtime)
+// Our local ToolResult union — 字段与 SDK ToolResult schema 对齐 (output 为 JSON 值)
 type OurToolResult =
-  | { status: "succeeded"; tool: string; callId: string; completedAt: string; output: unknown; metadata?: Record<string, unknown> }
-  | { status: "denied"; tool: string; callId: string; completedAt: string; error: { code: string; message: string }; metadata?: Record<string, unknown> }
-  | { status: "failed"; tool: string; callId: string; completedAt: string; error: { code: string; message: string; retryable?: boolean; details?: Record<string, unknown> }; metadata?: Record<string, unknown> };
-
-function asToolResult(r: OurToolResult): SdkToolResult {
-  return r as unknown as SdkToolResult;
-}
+  | { status: "succeeded"; tool: string; callId: string; completedAt: string; output: JsonValue; metadata?: JsonObject }
+  | { status: "denied"; tool: string; callId: string; completedAt: string; error: { code: string; message: string }; metadata?: JsonObject }
+  | { status: "failed"; tool: string; callId: string; completedAt: string; error: { code: string; message: string; retryable?: boolean; details?: JsonObject }; metadata?: JsonObject };
 
 // ============================================================
 // Provider config
@@ -253,6 +255,8 @@ const VERDICT_MAP: Record<string, string> = {
   not_credible: "不可信",
   undetermined: "无法判定",
 };
+// 模型按系统提示词直接输出中文 verdict; 英文键做兼容映射
+const VALID_VERDICTS = new Set(["可信", "存疑", "不可信", "无法判定"]);
 
 // ============================================================
 // Core verify logic (pure function, testable)
@@ -304,10 +308,13 @@ export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
   });
 
   const credibility = normalizeScore(pick(raw, "credibility", "score", "rating"));
+  const rawVerdict = String(pick(raw, "verdict") ?? "无法判定").trim();
   const verdict =
-    String(pick(raw, "verdict") ?? "无法判定") in VERDICT_MAP
-      ? VERDICT_MAP[String(pick(raw, "verdict") ?? "无法判定")]
-      : "无法判定";
+    rawVerdict in VERDICT_MAP
+      ? VERDICT_MAP[rawVerdict]
+      : VALID_VERDICTS.has(rawVerdict)
+        ? rawVerdict
+        : "无法判定";
   const evidence = asArray(pick(raw, "evidence", "sources", "proofs"))
     .map((e) => String(e ?? "").trim())
     .filter(Boolean);
@@ -325,8 +332,9 @@ export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
 // ---- In-memory GrantStore ----
 // Production should use persistent store (DB/Redis)
 interface GrantEntry {
-  grant: CapabilityGrant;
-  remainingUses: number;
+  trial: CapabilityGrant;   // maxUses = FREE_TRIAL_LIMIT, 内核 usage store 强制
+  paid: CapabilityGrant;    // 无 maxUses, 命中即计费
+  remainingUses: number;    // /verify 直连路径的本地配额簿记
   totalUsed: number;
 }
 
@@ -355,7 +363,7 @@ function grantKey(callerId: string, ip: string): string {
 const ipGrantCount = new Map<string, number>();
 const MAX_GRANTS_PER_IP = 5;
 
-function getOrCreateGrant(callerId: string, ip: string): { grant: CapabilityGrant; remainingUses: number; isNew: boolean } | null {
+function getOrCreateGrant(callerId: string, ip: string, issuedAt?: string): { grants: CapabilityGrant[]; remainingUses: number; isNew: boolean } | null {
   const key = grantKey(callerId, ip);
 
   // Check IP limit first
@@ -366,7 +374,7 @@ function getOrCreateGrant(callerId: string, ip: string): { grant: CapabilityGran
 
   const existing = grantStore.get(key);
   if (existing) {
-    return { grant: existing.grant, remainingUses: existing.remainingUses, isNew: false };
+    return { grants: [existing.trial, existing.paid], remainingUses: existing.remainingUses, isNew: false };
   }
 
   // New grant — check IP limit
@@ -376,12 +384,20 @@ function getOrCreateGrant(callerId: string, ip: string): { grant: CapabilityGran
   }
   ipGrantCount.set(ip, newIpCount + 1);
 
-  // Create new grant with FREE_TRIAL_LIMIT free calls
-  const now = new Date().toISOString();
+  // Create trial grant (maxUses enforced by kernel usage store) + paid grant.
+  // issuedAt 必须用请求上下文的 now (而非当前时钟): 内核校验 issuedAt <= context.now,
+  // 而 grant 恰好在本请求的 load 阶段铸造, 用当前时钟会晚于已冻结的 context.now,
+  // 导致首个请求被误判 no_matching_grant。
+  const mintedAt = issuedAt ?? new Date().toISOString();
   const subject: AgentAddress = { kind: "agent", agentId: callerId };
-  const grant = makeVerifyGrant(subject, now);
-  grantStore.set(key, { grant, remainingUses: FREE_TRIAL_LIMIT, totalUsed: 0 });
-  return { grant, remainingUses: FREE_TRIAL_LIMIT, isNew: true };
+  grantStore.set(key, {
+    trial: makeVerifyGrant(subject, mintedAt),
+    paid: makePaidVerifyGrant(subject, mintedAt),
+    remainingUses: FREE_TRIAL_LIMIT,
+    totalUsed: 0,
+  });
+  const entry = grantStore.get(key)!;
+  return { grants: [entry.trial, entry.paid], remainingUses: FREE_TRIAL_LIMIT, isNew: true };
 }
 
 function consumeGrant(callerId: string, ip: string): { ok: boolean; remainingUses: number; isFree: boolean } {
@@ -405,12 +421,44 @@ function getGrantStatus(callerId: string, ip: string): { remainingUses: number; 
   return {
     remainingUses: entry.remainingUses,
     totalUsed: entry.totalUsed,
-    isExpired: entry.grant.constraints.expiresAt ? new Date(entry.grant.constraints.expiresAt) < new Date() : false,
+    isExpired: entry.trial.constraints.expiresAt ? new Date(entry.trial.constraints.expiresAt) < new Date() : false,
   };
 }
 
-// ---- AuditSink (file-based JSONL, SharedOS-compatible format) ----
-// (Implementation moved to SharedOS Compatibility Layer above)
+// ---- KernelAuditBridge — 内核审计事件 → JSONL 落盘 (组织者核查的文件) ----
+// 事件保持 SDK AuditEvent 的原始 canonical 形状 (version/type/outcome/actor/
+// authority/owner/purpose/grantId/authorityHash/metadata), 不做降级映射。
+class KernelAuditBridge {
+  async record(event: AuditEvent): Promise<void> {
+    writeKernelEvent(event);
+  }
+}
+
+// ---- GrantSource — SDK 接口形状: load(context, signal) → grants ----
+// 返回 [体验grant, 付费grant]: 内核先尝试体验 grant (maxUses 由 usage store
+// 强制), 耗尽后自动落到付费 grant — matchedGrantId 即计费依据。
+const veritasGrantSource = {
+  async load(ctx: AccessContext, _signal: AbortSignal): Promise<CapabilityGrant[]> {
+    const actor = ctx.actor as { kind: string; agentId?: string; userId?: string; serviceId?: string };
+    let callerId: string;
+    if (actor.kind === "agent" && actor.agentId) {
+      callerId = actor.agentId;
+    } else if (actor.kind === "human" && actor.userId) {
+      callerId = actor.userId;
+    } else if (actor.kind === "service" && actor.serviceId) {
+      callerId = actor.serviceId;
+    } else {
+      return []; // 未知身份 → 无 grant → 内核默认拒绝
+    }
+    const entry = getOrCreateGrant(callerId, "kernel", ctx.now);
+    if (!entry) return [];
+    return entry.grants;
+  },
+};
+
+// ---- PolicySource: 故意不装 ----
+// 上个版本返回 { allowAll: true } — 与 "默认拒绝" 理念相反, 已删除。
+// 无 policySource 时授权完全由 grant 能力集决定: grant 未覆盖的一律拒绝。
 
 // ============================================================
 // Tool Definitions & Handlers
@@ -531,7 +579,7 @@ async function handleVerify(
       tool: call.tool,
       callId: call.id,
       completedAt: new Date().toISOString(),
-      output: result as unknown as Record<string, unknown>,
+      output: result as unknown as JsonValue,
     };
   } catch (err) {
     return {
@@ -578,93 +626,50 @@ const toolHandlers: SimpleToolHandler[] = [
 ];
 
 // ============================================================
-// SharedOS Compatibility Layer
+// SharedOS Kernel — 真内核集成
 // ============================================================
 //
-// SharedOS Kernel 集成说明:
-//   - /kernel/authorize — 符合 SharedOS grant 检查协议
-//   - /kernel/tools — SharedOS 工具目录协议
-//   - /kernel/tools/:name/invoke — SharedOS 工具调用协议
-//   - Audit sink 写入 JSONL 文件（SharedOS 可解析格式）
-//   - 直接实现了 SharedOS 核心接口，不依赖 @aicoo/sharedos-core
-//     运行时（该包内部模块在 Node 22 下有导出兼容性问题）
+// 比赛硬性要求: "Built on SharedOS" = agent 的调用在 SharedOSKernel 上
+// 完成 authorize → invoke → audit 闭环, 组织者核查内核审计记录。
 //
-// 比赛要求: 组织者通过 SharedOS 审计记录核查 "Built on SharedOS"
-// 我们的审计 JSONL 格式与 SharedOS audit schema 对齐
+//   - /kernel/authorize   → kernel.authorize()   (真实授权决策)
+//   - /kernel/tools       → kernel.listTools()   (能力发现, 看不见即不可用)
+//   - /kernel/tools/:name/invoke → kernel.invokeTool() (授权内联执行)
+//   - 内核审计事件原样落盘 kernel-audit-*.jsonl (canonical AuditEvent 形状)
+//
+// 免费额度与计费: 体验 grant (maxUses=3) 由内核 usage store 强制,
+// 耗尽后授权自动落到付费 grant, matchedGrantId 就是计费依据。
 
-// ---- AuditSink — JSONL 格式，符合 SharedOS 审计规范 ----
-class FileAuditSink {
-  async record(event: {
-    id: string;
-    type: string;
-    outcome: string;
-    at: string;
-    traceId: string;
-    actor: { kind: string; id: string };
-    purpose: string;
-    tool?: string;
-    metadata?: Record<string, unknown>;
-    reason?: string | null;
-  }): Promise<void> {
-    const record = {
-      id: event.id,
-      type: event.type,
-      outcome: event.outcome,
-      at: event.at,
-      traceId: event.traceId,
-      actor: event.actor,
-      purpose: event.purpose,
-      tool: event.tool,
-      metadata: event.metadata,
-      reason: event.reason ?? undefined,
-    };
-    writeAudit({
-      id: record.id,
-      timestamp: record.at,
-      caller: record.actor,
-      claim: String(record.metadata?.claim ?? ""),
-      claimHash: String(record.metadata?.claimHash ?? ""),
-      verdict: String(record.metadata?.verdict ?? ""),
-      credibility: Number(record.metadata?.credibility ?? 0),
-      evidenceCount: Number(record.metadata?.evidenceCount ?? 0),
-      riskFactorsCount: Number(record.metadata?.riskFactorsCount ?? 0),
-      durationMs: Number(record.metadata?.durationMs ?? 0),
-      modelProvider: String(record.metadata?.modelProvider ?? ""),
-      modelName: String(record.metadata?.modelName ?? ""),
-      error: record.reason ?? undefined,
-    });
-  }
+let kernel: SharedOSKernel | undefined;
+try {
+  kernel = new SharedOSKernel({
+    grantSource: veritasGrantSource,
+    authorizer: new CapabilityAuthorizer({ usageStore: new InMemoryGrantUsageStore() }),
+    audit: new KernelAuditBridge(),
+  });
+  kernel.registerTool(asKernelTool(VERIFY_TOOL_DEF, handleVerify));
+  kernel.registerTool(asKernelTool(HEALTH_TOOL_DEF, handleHealth));
+  console.log("[kernel] SharedOSKernel active — tools: veritas.verify, veritas.health");
+} catch (err) {
+  // 大声失败: 内核不可用时 /kernel/* 返回 503, /verify 直连仍可用
+  console.error("[kernel] SharedOSKernel init FAILED — /kernel/* will 503:", err);
 }
 
-// ---- PolicySource — 默认拒绝策略（SharedOS 核心理念）----
-async function veritasPolicySource(): Promise<{ policy: { default: "deny" }; version: string }> {
+// 把本地 handler 适配成 SDK ToolHandler (definition + parseArguments + invoke)
+function asKernelTool(
+  definition: ToolDefinition,
+  handler: (ctx: AccessContext, call: ToolCall, signal: AbortSignal) => Promise<SdkToolResult>,
+): ToolHandler {
   return {
-    policy: { default: "deny" as const },
-    version: "0.1.0",
+    definition,
+    parseArguments: (raw) => (raw && typeof raw === "object" ? raw : {}),
+    invoke: (ctx, call, signal) => handler(ctx, call, signal),
   };
 }
 
-// ---- GrantSource — 按 agent ID 提供 capability grants ----
-// Note: IP not available in grant source context; falls back to "kernel" IP hash.
-// This path is only used if SharedOS kernel is initialized (currently manual).
-async function veritasGrantSource(actor: { kind: string; agentId?: string; userId?: string; serviceId?: string }): Promise<CapabilityGrant[]> {
-  let callerId: string;
-  if (actor.kind === "agent" && actor.agentId) {
-    callerId = actor.agentId;
-  } else if (actor.userId) {
-    callerId = actor.userId;
-  } else if (actor.serviceId) {
-    callerId = actor.serviceId;
-  } else {
-    return [];
-  }
-  const grant = getOrCreateGrant(callerId, "kernel");
-  if (!grant) return [];
-  return [grant.grant];
+export function getKernel(): SharedOSKernel | undefined {
+  return kernel;
 }
-
-// Audit sink singleton
-const auditSink = new FileAuditSink();
 
 // ============================================================
 // Express HTTP App
@@ -680,7 +685,7 @@ app.use(express.static("public"));
 app.use((_req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Agent-Id, X-Agent-Kind, X-Owner-Id");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Agent-Id, X-Agent-Kind, X-Owner-Id, X-Purpose");
   if (_req.method === "OPTIONS") return res.status(204).end();
   next();
 });
@@ -764,7 +769,8 @@ app.get("/health", (_req, res) => {
     provider: PROVIDER,
     model: MODEL,
     endpoint: "/verify",
-    kernel: "sharedos",
+    kernel: kernel ? "active" : "unavailable",
+    pricing: `${CREDIT_PRICE} credit/call, first ${FREE_TRIAL_LIMIT} free`,
     tools: toolHandlers.map((h) => h.definition.name),
   });
 });
@@ -789,9 +795,9 @@ app.get("/agent/card", (_req, res) => {
       {
         resource: { namespace: "sharedos.verify", path: ["verify"] },
         action: "invoke",
-        maxUses: 10,
+        maxUses: FREE_TRIAL_LIMIT,
         purposes: ["arena.defend", "arena.refute", "factcheck"],
-        pricing: "1 credit per call after 10 free trials",
+        pricing: `${CREDIT_PRICE} credits per call after ${FREE_TRIAL_LIMIT} free trial calls`,
       },
     ],
   });
@@ -823,84 +829,91 @@ app.get("/sharednet/status", (_req, res) => {
   });
 });
 
-// ---- POST /kernel/authorize — SharedOS-compatible grant check ----
+// ---- POST /kernel/authorize — 真内核授权决策 ----
+// 请求体: { resource: { namespace, path?, owner? }, action }
+//     或 SharedOS 客户端形状: { capabilities: [{ resource, action }] }
+// purpose 经 X-Purpose 头传入 (缺省 factcheck), 必须命中 grant constraints.purposes
 
 app.post("/kernel/authorize", async (req, res) => {
   try {
+    if (!kernel) return res.status(503).json({ error: "SharedOS kernel unavailable" });
     const body = req.body as {
-      capabilities?: Array<{ resource?: { namespace?: string; path?: string[] }; action?: string }>;
-      purpose?: string;
+      resource?: { namespace?: string; path?: string[] | string };
+      action?: string;
+      capabilities?: Array<{ resource?: { namespace?: string; path?: string[] | string }; action?: string }>;
     };
+    const cap = body.capabilities?.[0] ?? body;
+    const ns = cap?.resource?.namespace;
+    const action = cap?.action;
+    if (!ns || !action) {
+      return res.status(400).json({ error: "resource.namespace and action are required" });
+    }
+    const rawPath = cap?.resource?.path;
+    const path = Array.isArray(rawPath) ? rawPath : rawPath ? [rawPath] : [];
 
-    const requestedNs = body?.capabilities?.[0]?.resource?.namespace;
-    const requestedPath = body?.capabilities?.[0]?.resource?.path;
-    const requestedAction = body?.capabilities?.[0]?.action;
-
-    // Simple allow/deny based on our grants
-    const allowed =
-      requestedNs === "sharedos.verify" &&
-      (requestedPath?.includes("verify") || requestedPath?.includes("health")) &&
-      requestedAction === "invoke";
-
-    res.json({
-      status: allowed ? "allowed" : "denied",
-      matchedCapabilities: allowed
-        ? [
-            {
-              resource: { namespace: requestedNs, path: requestedPath },
-              action: requestedAction,
-              scope: "exact" as const,
-            },
-          ]
-        : [],
-      reasonCode: allowed ? undefined : "no_matching_grant",
+    const context = buildAccessContext(req);
+    const decision = await kernel.authorize(context, {
+      resource: { namespace: ns, path, owner: AGENT_OWNER },
+      action,
     });
+    // 兼容字段: status (allowed/denied); 内核 canonical 字段原样保留
+    res.json({ ...decision, status: decision.allowed ? "allowed" : "denied" });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
 });
 
-// ---- GET /kernel/tools — Published tool catalog ----
+// ---- GET /kernel/tools — 内核能力目录 (看不见即不可用) ----
 
-app.get("/kernel/tools", async (_req, res) => {
+app.get("/kernel/tools", async (req, res) => {
   try {
-    const published = toolHandlers.map((h) => ({
-      name: h.definition.name,
-      description: h.definition.description,
-      inputSchema: h.definition.inputSchema,
-      outputSchema: h.definition.outputSchema,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false },
-      metadata: { namespace: h.definition.namespace, source: h.definition.source },
-    }));
-    res.json({ tools: published });
+    if (!kernel) return res.status(503).json({ error: "SharedOS kernel unavailable" });
+    const tools = await kernel.listTools(buildAccessContext(req));
+    res.json({ tools });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
 });
 
-// ---- POST /kernel/tools/:name/invoke — Direct tool dispatch ----
+// ---- POST /kernel/tools/:name/invoke — 内核授权内联执行 ----
+// 授权、用量扣减 (maxUses)、审计全部由内核完成; 未授权时返回 status:"denied" ToolResult
 
 app.post("/kernel/tools/:name/invoke", async (req, res) => {
   try {
-    const toolName = req.params.name;
-    const handler = toolHandlers.find((h) => h.definition.name === toolName);
-    if (!handler) {
-      return res.status(404).json({ error: `Unknown tool: ${toolName}` });
-    }
-
+    if (!kernel) return res.status(503).json({ error: "SharedOS kernel unavailable" });
     const context = buildAccessContext(req);
-    const result = await handler.invoke(context, {
+    const call: ToolCall = {
       id: `call-${randomUUID()}`,
-      definition: handler.definition,
-      arguments: req.body,
+      tool: req.params.name,
+      arguments: JSON.parse(JSON.stringify(req.body ?? {})) as JsonObject,
       traceId: context.traceId,
       requestedAt: new Date().toISOString(),
-    } as unknown as ToolCall, new AbortController().signal);
-
+    };
+    const result = await kernel.invokeTool(context, call);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
+});
+
+// ---- GET /kernel/usage — 计费台账摘要 ----
+// matchedGrantId 以 grant-verify-paid- 开头 = 计费调用; grant-verify- = 免费体验
+
+app.get("/kernel/usage", (_req, res) => {
+  const callers = [...grantStore.entries()].map(([key, e]) => ({
+    caller: key,
+    trialGrantId: e.trial.id,
+    paidGrantId: e.paid.id,
+    remainingFreeUses: e.remainingUses,
+    totalCalls: e.totalUsed,
+    trialExpiresAt: e.trial.constraints.expiresAt,
+  }));
+  res.json({
+    pricing: `${CREDIT_PRICE} credit/call, first ${FREE_TRIAL_LIMIT} free`,
+    callerCount: callers.length,
+    callers,
+    note: "Authoritative per-call ledger = kernel-audit-*.jsonl (matchedGrantId per invocation)",
+  });
 });
 
 // ---- 404 fallback ----
@@ -916,6 +929,7 @@ app.use((_req, res) => {
       "POST /kernel/authorize",
       "GET  /kernel/tools",
       "POST /kernel/tools/:name/invoke",
+      "GET  /kernel/usage",
     ],
   });
 });
@@ -943,26 +957,35 @@ const jsonErrorHandler: express.ErrorRequestHandler = (err, _req, res, _next) =>
 app.use(jsonErrorHandler);
 
 // ============================================================
-// Helper: build AccessContext (for tool dispatch only)
+// Helper: build AccessContext (内核可信边界, 由本服务作为 host 构造)
 // ============================================================
-// NOTE: SharedOS 规定 AccessContext 是不可从请求头构造的可信边界。
-// 这里仅用它传递 traceId + actor 信息给本地 tool dispatch，
-// 授权决策在 grant store（getOrCreateGrant / consumeGrant）中完成。
+// SharedOS 规定 AccessContext 是 host 创建的可信输入, 不能伪造请求体字段。
+// 本服务是唯一 host: 从已验证的 HTTP 头解析 caller 身份, authority/owner
+// 固定为本 agent (资源所有者), purpose 缺省 factcheck。
+// 内核据此加载 grant (subject=actor) 并做出默认拒绝的授权决策。
 
 function buildAccessContext(req: express.Request): AccessContext {
   const agentId = String(req.headers["x-agent-id"] || "anonymous");
-  const kind = String(req.headers["x-agent-kind"] || "agent") as "agent" | "human";
+  const kind = String(req.headers["x-agent-kind"] || "agent");
+  const purpose = String(req.headers["x-purpose"] || "factcheck");
 
-  const actor = (kind === "human"
-    ? { kind: "human" as const, userId: agentId }
-    : { kind: "agent" as const, agentId }) as AccessContext["actor"];
+  const actor: AccessContext["actor"] =
+    kind === "human"
+      ? { kind: "human", userId: agentId }
+      : kind === "service"
+        ? { kind: "service", serviceId: agentId }
+        : { kind: "agent", agentId };
 
   return {
-    namespaceId: "sharedos.verify",
+    namespaceId: "sharedos",
     actor,
-    purpose: "tool.invoke",
+    authority: AGENT_OWNER,
+    owner: AGENT_OWNER,
+    purpose,
+    now: new Date().toISOString(),
     traceId: `trace-${randomUUID()}`,
-  } as AccessContext;
+    enabledToolNamespaces: ["veritas"],
+  };
 }
 
 // ============================================================
@@ -1009,6 +1032,35 @@ async function startSharedNetListener(): Promise<void> {
   }
 }
 
+// Veritas 自身的调用也走内核 — 自调用同样产生 authorize/invoke 审计记录,
+// 即 "自有 loop 在内核内跑 turn" 的形态; 内核不可用时回退直连。
+async function selfVerify(claim: string, context?: string): Promise<VerifyResult> {
+  if (kernel) {
+    const selfCtx: AccessContext = {
+      namespaceId: "sharedos",
+      actor: AGENT_OWNER,
+      authority: AGENT_OWNER,
+      owner: AGENT_OWNER,
+      purpose: "factcheck",
+      now: new Date().toISOString(),
+      traceId: `trace-${randomUUID()}`,
+      enabledToolNamespaces: ["veritas"],
+    };
+    const result = await kernel.invokeTool(selfCtx, {
+      id: `call-${randomUUID()}`,
+      tool: "veritas.verify",
+      arguments: { claim, ...(context ? { context } : {}) },
+      traceId: selfCtx.traceId,
+      requestedAt: selfCtx.now,
+    });
+    if (result.status === "succeeded") {
+      return result.output as unknown as VerifyResult;
+    }
+    throw new Error(`kernel refused self-verify: ${result.error.code}`);
+  }
+  return verifyClaim({ claim, context });
+}
+
 async function handleRoomMessage(msg: { content: string; sender_agent_id: string }): Promise<void> {
   // Heuristic: if the message looks like a claim (question mark, "是不是", "真的", "是否", "是否", 或 > 20 chars ending with 。/？)
   const text = msg.content.trim();
@@ -1023,7 +1075,7 @@ async function handleRoomMessage(msg: { content: string; sender_agent_id: string
 
   try {
     console.log(`[sharednet] Verifying claim from ${msg.sender_agent_id}: ${claim.slice(0, 80)}`);
-    const result = await verifyClaim({ claim });
+    const result = await selfVerify(claim);
 
     const reply = `📊 验真结果 [${result.verdict}] 可信度 ${result.credibility}/100\n` +
       `证据：${result.evidence.slice(0, 2).join("；") || "无"}\n` +
@@ -1046,7 +1098,7 @@ app.listen(PORT, () => {
   console.log(`  endpoint : POST /verify   { claim, context? }`);
   console.log(`  health   : GET  /health`);
   console.log(`  card     : GET  /agent/card`);
-  console.log(`  kernel   : POST /kernel/authorize, GET /kernel/tools, POST /kernel/tools/:name/invoke`);
+  console.log(`  kernel   : ${kernel ? "ACTIVE" : "UNAVAILABLE"} — POST /kernel/authorize, GET /kernel/tools, POST /kernel/tools/:name/invoke, GET /kernel/usage`);
   console.log(`  sharednet: POST /sharednet/join, GET /sharednet/status`);
   console.log(`  cli      : npx veritas verify "claim"`);
   console.log(`  mcp      : npx veritas-mcp`);
