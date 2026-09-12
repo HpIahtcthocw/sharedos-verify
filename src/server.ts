@@ -22,7 +22,8 @@
 
 import "dotenv/config";
 import express from "express";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, generateKeyPairSync, sign as edSign, createPrivateKey, createPublicKey } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 
 // ---- SharedOS SDK — 真内核 (SharedOSKernel 在 Node 22 下经伞形包导入验证可用) ----
@@ -197,6 +198,71 @@ async function structuredCall<T>(opts: {
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_CONTEXT_CHARS = 4000;
 
+// ============================================================
+// 判定书签名 (Ed25519) — 学自 Witness 的 signed docket
+// 每份 verify/defend 结果带签名; 公钥公开在 /agent/card 与 /health,
+// 任何人可离线验证 "该判定出自 Veritas 且未被篡改"。
+// 私钥首次启动生成, 持久化在 AUDIT_DIR/signing-key.json (不进 git)。
+// ============================================================
+
+interface SigningKeyPem {
+  privateKeyPem: string;
+  publicKeyPem: string;
+  keyId: string;
+}
+
+let SIGNING: SigningKeyPem | undefined;
+
+function loadOrCreateSigningKey(): SigningKeyPem {
+  const keyFile = path.join(
+    process.env.AUDIT_DIR || path.resolve(process.cwd(), "audit"),
+    "signing-key.json",
+  );
+  try {
+    const raw = JSON.parse(fs.readFileSync(keyFile, "utf-8")) as SigningKeyPem;
+    if (raw.privateKeyPem && raw.publicKeyPem) {
+      SIGNING = { ...raw, keyId: raw.keyId || sha256(raw.publicKeyPem).slice(0, 16) };
+      return SIGNING;
+    }
+  } catch {
+    // 首次运行 — 生成新密钥对
+  }
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+  SIGNING = { privateKeyPem, publicKeyPem, keyId: sha256(publicKeyPem).slice(0, 16) };
+  try {
+    fs.mkdirSync(path.dirname(keyFile), { recursive: true });
+    fs.writeFileSync(keyFile, JSON.stringify(SIGNING, null, 2), "utf-8");
+    console.log(`[attest] new Ed25519 signing key generated → ${keyFile} (keyId=${SIGNING.keyId})`);
+  } catch (err) {
+    console.error("[attest] failed to persist signing key:", err);
+  }
+  return SIGNING;
+}
+
+function sha256(input: string): string {
+  return createHash("sha256").update(input, "utf-8").digest("hex");
+}
+
+/** 对结果对象做规范 JSON 签名, 返回可附在输出里的证明块 */
+function attestResult(output: Record<string, unknown>): Record<string, unknown> {
+  if (!SIGNING) return {};
+  const { privateKeyPem, publicKeyPem, keyId } = SIGNING;
+  const payload = JSON.stringify(output);
+  const signature = edSign(null, Buffer.from(payload, "utf-8"), createPrivateKey(privateKeyPem)).toString("base64");
+  return {
+    attestation: {
+      alg: "ed25519",
+      keyId,
+      publicKey: publicKeyPem.replace(/\n/g, "\\n"),
+      payload_sha256: sha256(payload),
+      signature,
+      note: "signature covers all other top-level fields (canonical JSON, key order preserved)",
+    },
+  };
+}
+
 async function fetchUrlText(url: string): Promise<string> {
   try {
     const u = new URL(url);
@@ -305,6 +371,55 @@ export interface VerifyResult {
   verdict: string;
   evidence: string[];
   risk_factors: string[];
+  /** 证据回执: 引用句经代码核验确实出现在抓取的网页原文里 (学自 ground) */
+  receipts?: EvidenceReceipt[];
+}
+
+export interface EvidenceReceipt {
+  evidence_index: number;
+  source_url: string;
+  page_sha256: string;
+  quote_verified: boolean;
+}
+
+/** 规范化文本: 小写、压空白、去标点 — 用于引用句与页面原文的匹配 */
+function normText(s: string): string {
+  return s.toLowerCase().replace(/[\s\p{P}]+/gu, " ").trim();
+}
+
+function buildEvidenceReceipts(
+  evidence: string[],
+  pages: { url: string; text: string }[],
+): EvidenceReceipt[] {
+  const receipts: EvidenceReceipt[] = [];
+  // 证据句与页面原文的匹配: 全句或任意连续 10 词窗口命中即算代码核验通过
+  // (中英混排证据的前缀是中文, 必须滑动窗口才能命中英文原文)
+  const appearsIn = (ne: string, np: string): boolean => {
+    if (np.includes(ne)) return true;
+    const words = ne.split(" ").filter(Boolean);
+    const W = 10;
+    for (let i = 0; i + W <= words.length; i++) {
+      const w = words.slice(i, i + W).join(" ");
+      if (w.length > 15 && np.includes(w)) return true;
+    }
+    return false;
+  };
+  evidence.forEach((e, i) => {
+    const ne = normText(e);
+    if (!ne) return;
+    for (const p of pages) {
+      if (appearsIn(ne, normText(p.text))) {
+        receipts.push({
+          evidence_index: i,
+          source_url: p.url,
+          page_sha256: sha256(p.text),
+          quote_verified: true,
+        });
+        return;
+      }
+    }
+  });
+  return receipts;
 }
 
 export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
@@ -314,11 +429,23 @@ export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
   // (grounding 补齐 — 纯推理之外多一层"我读过原文"的依据)
   let fetchedContext = context;
   const urlMatch = claim.match(/https?:\/\/[^\s，,。"')\]]+/g);
+  const fetchedPages: { url: string; text: string }[] = [];
   if (urlMatch && urlMatch.length > 0) {
-    const pages = await Promise.all(urlMatch.slice(0, 2).map((u) => fetchUrlText(u)));
-    const grounded = pages.filter((p) => p && p.length > 40).join("\n\n");
+    const pages = await Promise.all(
+      urlMatch.slice(0, 2).map(async (u) => ({ url: u, text: await fetchUrlText(u) })),
+    );
+    for (const p of pages) {
+      if (p.text && p.text.length > 40) fetchedPages.push(p);
+    }
+    const failed = pages.length - fetchedPages.length;
+    const grounded = fetchedPages.map((p) => p.text).join("\n\n");
     if (grounded) {
       fetchedContext = `【自动抓取的断言引用网页内容】\n${grounded}${context ? `\n\n【调用方提供的背景】\n${context}` : ""}`;
+    }
+    if (failed > 0) {
+      // 抓取失败必须明说 — 否则模型会编造"页面说……"的伪引用
+      fetchedContext = `${fetchedContext ? fetchedContext + "\n\n" : ""}` +
+        `【注意】断言中引用了网页, 但自动抓取失败。你没有读过页面内容, 严禁声称或暗示你引用了页面原文; 请仅基于内置知识判断, 并在 evidence/risk_factors 中注明"原文未能核对"。`;
     }
   }
 
@@ -367,7 +494,12 @@ export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
     .map((r) => String(r ?? "").trim())
     .filter(Boolean);
 
-  return { credibility, verdict, evidence, risk_factors };
+  const result: VerifyResult = { credibility, verdict, evidence, risk_factors };
+  if (fetchedPages.length > 0) {
+    const receipts = buildEvidenceReceipts(evidence, fetchedPages);
+    if (receipts.length > 0) result.receipts = receipts;
+  }
+  return result;
 }
 
 // ============================================================
@@ -649,12 +781,13 @@ async function handleVerify(
       modelName: MODEL,
     }));
 
+    const payload: Record<string, unknown> = { ...result };
     return {
       status: "succeeded",
       tool: call.tool,
       callId: call.id,
       completedAt: new Date().toISOString(),
-      output: result as unknown as JsonValue,
+      output: { ...payload, ...attestResult(payload) } as unknown as JsonValue,
     };
   } catch (err) {
     return {
@@ -740,12 +873,13 @@ async function handleDefend(
       modelName: MODEL,
     }));
 
+    const payload: Record<string, unknown> = { ...result };
     return {
       status: "succeeded",
       tool: call.tool,
       callId: call.id,
       completedAt: new Date().toISOString(),
-      output: result as unknown as JsonValue,
+      output: { ...payload, ...attestResult(payload) } as unknown as JsonValue,
     };
   } catch (err) {
     return {
@@ -920,6 +1054,12 @@ app.get("/health", (_req, res) => {
     endpoint: "/verify",
     kernel: kernel ? "active" : "unavailable",
     pricing: `${CREDIT_PRICE} credit/call, first ${FREE_TRIAL_LIMIT} free`,
+    attestation: {
+      alg: "ed25519",
+      keyId: SIGNING_KEY.keyId,
+      publicKey: SIGNING_KEY.publicKeyPem.replace(/\n/g, "\\n"),
+      note: "verify/defend outputs carry an Ed25519 signature over their canonical JSON",
+    },
     tools: toolHandlers.map((h) => h.definition.name),
   });
 });
@@ -934,6 +1074,12 @@ app.get("/agent/card", (_req, res) => {
       "Evidence verification agent. Evaluates claim credibility (0-100) with structured verdict, evidence, and risk factors. " +
       "Designed for Arena agents who need to defend claims or refute opponents.",
     version: "0.1.0",
+    attestation: {
+      alg: "ed25519",
+      keyId: SIGNING_KEY.keyId,
+      publicKey: SIGNING_KEY.publicKeyPem.replace(/\n/g, "\\n"),
+      note: "verify/defend outputs are Ed25519-signed; verify offline with this public key",
+    },
     tools: toolHandlers.map((h) => ({
       name: h.definition.name,
       description: h.definition.description,
@@ -1337,6 +1483,9 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
 // ============================================================
 // Boot
 // ============================================================
+
+// 判定书签名密钥 — 启动时加载或生成
+const SIGNING_KEY = loadOrCreateSigningKey();
 
 app.listen(PORT, () => {
   console.log(`\n  Veritas (sharedos-verify) → http://localhost:${PORT}`);
