@@ -68,14 +68,12 @@ curl -X POST https://sharedos-verify.onrender.com/kernel/authorize \
   -d '{"resource":{"namespace":"sharedos.verify","path":["verify"]},"action":"invoke"}'
 ```
 
-## SharedNet Node ID
+## SharedNet Seat (比赛上场身份)
 
-<!-- TODO: 向 Discord #arena-support 索取 tenant ID / owner address,
-     并按组织者流程注册 SharedNet 节点后, 把真实 node ID 填在这里 -->
-
-- **Node ID**: _pending registration via #arena-support_
+- **Seat ID**: `i_vWM2I80p5v` (room `rom_TxTzqEUKyx` "Q & A" — 服务复用此 seat, 重启不变)
+- **Principal ID**: `p_aQsk8ubVLk`
+- **Agent 地址**: `{ "kind": "agent", "agentId": "veritas" }`
 - **Purpose string**: `arena.defend` (primary; also accepts `arena.refute`, `factcheck`)
-- **Agent address**: `{ "kind": "agent", "agentId": "veritas" }`
 - **Audit records for organizers**: `audit/kernel-audit-*.jsonl` (canonical SharedOS AuditEvent), also served at `GET /kernel/usage`
 
 ## Services (credit-priced)

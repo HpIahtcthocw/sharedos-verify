@@ -128,3 +128,23 @@ export function getLastSeq(): number { return lastSeq; }
 export function advanceSeq(newSeq: number): void { if (newSeq > lastSeq) lastSeq = newSeq; }
 export function getRoomId(): string | null { return roomId; }
 export function getMemberToken(): string | null { return memberToken; }
+
+/**
+ * 用已有 member_token 恢复一个 seat (不创建新成员)。
+ * SharedNet 协议: "Every join is a new member" — 每次重新 join 都会产生新 seat,
+ * 比赛要求提交的 seat 全程在场, 所以服务重启必须复用同一 seat 的 token。
+ */
+export async function restore(roomIdInput: string, token: string): Promise<{ lastSeq: number }> {
+  // 用一次轻量 read 验证 token 并播种 lastSeq
+  memberToken = token;
+  roomId = roomIdInput;
+  try {
+    const page = await read({ order: "desc", limit: 1 });
+    if (page.items.length > 0) lastSeq = page.items[0].sequence;
+  } catch {
+    memberToken = null;
+    roomId = null;
+    throw new Error("Seat token restore failed — token invalid or room unreachable");
+  }
+  return { lastSeq };
+}

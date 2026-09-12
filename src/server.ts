@@ -46,7 +46,7 @@ import {
 // ---- Local modules ----
 import { AGENT_ID, AGENT_NAME, AGENT_OWNER, makeVerifyGrant, makePaidVerifyGrant, makeDirectoryGrant, FREE_TRIAL_LIMIT, CREDIT_PRICE } from "./agent.js";
 import { createAuditRecord, writeAudit, writeKernelEvent, type AuditRecord } from "./audit.js";
-import { join as snJoin, say as snSay, wait as snWait, read as snRead, getLastSeq, advanceSeq, getRoomId, getMemberToken } from "./sharednet.js";
+import { join as snJoin, restore as snRestore, say as snSay, wait as snWait, read as snRead, getLastSeq, advanceSeq, getRoomId, getMemberToken } from "./sharednet.js";
 
 // Our local ToolResult union — 字段与 SDK ToolResult schema 对齐 (output 为 JSON 值)
 type OurToolResult =
@@ -994,20 +994,27 @@ function buildAccessContext(req: express.Request): AccessContext {
 
 async function startSharedNetListener(): Promise<void> {
   const roomIdEnv = process.env.SHAREDNET_ROOM_ID;
+  const memberTokenEnv = process.env.SHAREDNET_MEMBER_TOKEN;
   const tokenEnv = process.env.SHAREDNET_TOKEN;
-  if (!roomIdEnv || !tokenEnv) {
-    console.log("[sharednet] No SHAREDNET_ROOM_ID / SHAREDNET_TOKEN env — skipping auto-join");
+  if (!roomIdEnv || (!memberTokenEnv && !tokenEnv)) {
+    console.log("[sharednet] No SHAREDNET_ROOM_ID / (SHAREDNET_MEMBER_TOKEN | SHAREDNET_TOKEN) env — skipping auto-join");
     return;
   }
 
   try {
-    console.log(`[sharednet] Joining room ${roomIdEnv}...`);
-    const joinResult = await snJoin(roomIdEnv, tokenEnv, AGENT_NAME, "claude-code");
-    console.log(`[sharednet] Joined as ${joinResult.agent_id} (instance ${joinResult.instance_id}) — ${joinResult.history.items.length} history messages`);
-
-    // Process any existing history messages first
-    for (const msg of joinResult.history.items) {
-      advanceSeq(msg.sequence);
+    let selfInstanceId: string | undefined = process.env.SHAREDNET_SEAT_ID;
+    if (memberTokenEnv) {
+      // 复用已有 seat — 同一个 seat ID 跨重启保持不变 (比赛硬性要求)
+      const { lastSeq } = await snRestore(roomIdEnv, memberTokenEnv);
+      console.log(`[sharednet] Restored existing seat ${selfInstanceId ?? "(from env)"} in ${roomIdEnv} (last_seq=${lastSeq})`);
+    } else {
+      console.log(`[sharednet] Joining room ${roomIdEnv} with invite token (new seat)...`);
+      const joinResult = await snJoin(roomIdEnv, tokenEnv!, AGENT_NAME, "claude-code");
+      selfInstanceId = joinResult.instance_id;
+      console.log(`[sharednet] Joined as ${joinResult.agent_id ?? selfInstanceId} (instance ${selfInstanceId}) — ${joinResult.history.items.length} history messages`);
+      for (const msg of joinResult.history.items) {
+        advanceSeq(msg.sequence);
+      }
     }
 
     // Long-poll loop: wait for new messages and auto-respond to claims
@@ -1017,9 +1024,9 @@ async function startSharedNetListener(): Promise<void> {
         for (const msg of page.items) {
           advanceSeq(msg.sequence);
           // Skip our own messages
-          if (msg.sender_agent_id === joinResult.agent_id) continue;
+          if (selfInstanceId && msg.sender_instance_id === selfInstanceId) continue;
 
-          console.log(`[sharednet] <${msg.sender_agent_id}> ${msg.content.slice(0, 120)}`);
+          console.log(`[sharednet] <${msg.sender_instance_id}> ${msg.content.slice(0, 120)}`);
           await handleRoomMessage(msg);
         }
       } catch (err) {

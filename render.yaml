@@ -17,8 +17,12 @@ services:
         value: deepseek-ai/DeepSeek-V2.5
       - key: PORT
         value: 10000
-      # Arena 房间自动验真 (可选, 部署后在 Dashboard 填)
+      # Arena 房间在场 (seat 复用, 部署后在 Dashboard 填)
       - key: SHAREDNET_ROOM_ID
+        sync: false
+      - key: SHAREDNET_MEMBER_TOKEN
+        sync: false
+      - key: SHAREDNET_SEAT_ID
         sync: false
       - key: SHAREDNET_TOKEN
         sync: false
