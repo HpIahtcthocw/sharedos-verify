@@ -134,6 +134,11 @@ function extractJson<T>(text: string): T {
 }
 
 const CALL_TIMEOUT_MS = 60000;
+// 模型降级链: 主模型免费额度耗尽/故障时自动切换, 保证 Arena 全程可用
+const MODEL_FALLBACKS: Record<string, string[]> = {
+  qwen: ["qwen-plus-latest", "qwen-flash", "qwen-turbo"],
+  deepseek: ["deepseek-ai/DeepSeek-V2.5"],
+};
 
 async function structuredCall<T>(opts: {
   system: string;
@@ -142,41 +147,51 @@ async function structuredCall<T>(opts: {
 }): Promise<T> {
   if (!API_KEY) throw new Error(`No ${PROVIDER} API key configured — set ${PROVIDER.toUpperCase()}_API_KEY env var`);
 
-  // DeepSeek / Qwen / OpenAI-compatible path
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), CALL_TIMEOUT_MS);
-  try {
-    const resp = await fetch(`${BASE_URL}/chat/completions`, {
-      method: "POST",
-      signal: ctrl.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: opts.system },
-          { role: "user", content: opts.user },
-        ],
-        temperature: 0.7,
-      }),
-    });
-    if (!resp.ok) {
-      const detail = await resp.text().catch(() => "");
-      throw new Error(`Upstream model error (${resp.status}): ${detail.slice(0, 300)}`);
+  const chain = [MODEL, ...(MODEL_FALLBACKS[PROVIDER] ?? []).filter((m) => m !== MODEL)];
+  let lastError: Error = new Error("no model attempted");
+  for (const model of chain) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), CALL_TIMEOUT_MS);
+    try {
+      const resp = await fetch(`${BASE_URL}/chat/completions`, {
+        method: "POST",
+        signal: ctrl.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${API_KEY}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: opts.system },
+            { role: "user", content: opts.user },
+          ],
+          temperature: 0.7,
+        }),
+      });
+      if (!resp.ok) {
+        const detail = await resp.text().catch(() => "");
+        lastError = new Error(`Upstream model error (${resp.status}) [${model}]: ${detail.slice(0, 300)}`);
+        // 额度耗尽/限流 → 试下一个模型; 其余错误也依次尝试 (幂等请求, 无副作用)
+        continue;
+      }
+      const data = (await resp.json()) as {
+        choices?: { message?: { content?: string } }[];
+      };
+      const text = data?.choices?.[0]?.message?.content;
+      if (!text || typeof text !== "string") {
+        lastError = new Error(`Empty model response [${model}]`);
+        continue;
+      }
+      return extractJson<T>(text);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      continue;
+    } finally {
+      clearTimeout(timer);
     }
-    const data = (await resp.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const text = data?.choices?.[0]?.message?.content;
-    if (!text || typeof text !== "string") {
-      throw new Error("Empty model response");
-    }
-    return extractJson<T>(text);
-  } finally {
-    clearTimeout(timer);
   }
+  throw lastError;
 }
 
 const FETCH_TIMEOUT_MS = 8000;
@@ -295,6 +310,18 @@ export interface VerifyResult {
 export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
   const { claim, context } = input;
 
+  // URL 自动取证: 断言里带链接就抓取网页正文, 作为可核对的事实依据
+  // (grounding 补齐 — 纯推理之外多一层"我读过原文"的依据)
+  let fetchedContext = context;
+  const urlMatch = claim.match(/https?:\/\/[^\s，,。"')\]]+/g);
+  if (urlMatch && urlMatch.length > 0) {
+    const pages = await Promise.all(urlMatch.slice(0, 2).map((u) => fetchUrlText(u)));
+    const grounded = pages.filter((p) => p && p.length > 40).join("\n\n");
+    if (grounded) {
+      fetchedContext = `【自动抓取的断言引用网页内容】\n${grounded}${context ? `\n\n【调用方提供的背景】\n${context}` : ""}`;
+    }
+  }
+
   const schema = {
     type: "object",
     properties: {
@@ -321,7 +348,7 @@ export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
 
   const raw = await structuredCall<Record<string, unknown>>({
     system: VERIFY_SYSTEM,
-    user: buildVerifyPrompt(claim, context),
+    user: buildVerifyPrompt(claim, fetchedContext),
     schema: schema as Record<string, unknown>,
   });
 
