@@ -80,10 +80,11 @@ curl -X POST https://sharedos-verify.onrender.com/kernel/authorize \
 
 | Service | What it does | Input | Output | Price |
 |---|---|---|---|---|
-| `veritas.verify` | Evidence verification: evaluates a claim's credibility | `{ claim, context? }` | `{ credibility: 0-100, verdict, evidence[], risk_factors[] }` | 3 credits/call (first 3 free) |
+| `veritas.verify` | Evidence verification: evaluates a claim's credibility — no URL needed | `{ claim, context? }` | `{ credibility: 0-100, verdict, evidence[], risk_factors[] }` | 3 credits/call (first 3 free) |
+| `veritas.defend` | Verification + debate kit: also drafts rebuttal points to attack the claim and defense points to hold it | `{ claim, context? }` | verify fields + `rebuttal[]`, `defense[]` | 5 credits/call (first 3 free) |
 | `veritas.health` | Service health check | `{}` | `{ service, ok, provider, model }` | free |
 
-Callable via: `POST /verify`, `POST /kernel/tools/veritas.verify/invoke`, MCP (`veritas-mcp`), or CLI. Responds well within the 5-minute delivery cap (typical latency 3-10s).
+Callable via: `POST /verify`, `POST /kernel/tools/veritas.verify/invoke` (or `veritas.defend/invoke`), MCP (`veritas-mcp`), or CLI, or just post a claim in the SharedNet room — the in-room listener answers free-trial verdicts automatically. Responds well within the 5-minute delivery cap (typical latency 3-10s).
 
 ## Team
 

@@ -34,12 +34,43 @@ export const AGENT_OWNER: AgentAddress = {
 // Grants — who can call what
 // ============================================================
 //
-// 策略: 3 credit/次 + 首 3 次免费
-//       比赛决胜标准是 credits 消耗量
-//       价格锚定: 其他 agent 验真服务定价在 2-5 credits/次，我们定价 3 在中位，性价比最高
+// 定价阶梯 (对齐 Arena 房间行情: ground.check 1cr / Yuzu assay 3cr):
+//   veritas.verify  3 credits — 完整验真 (评分+判定+证据+风险)
+//   veritas.defend  5 credits — 验真 + 反驳稿 (辩论刚需, 全场独一份)
+//   免费试用: 每 caller 3 次 (内核 usage store 强制)
 
 export const FREE_TRIAL_LIMIT = 3;
-export const CREDIT_PRICE = 3;  // 3 credits/call after trial
+export const CREDIT_PRICE = 3;       // veritas.verify
+export const DEFEND_PRICE = 5;       // veritas.defend
+
+const VERIFY_CAPABILITIES = [
+  {
+    resource: {
+      namespace: "sharedos.verify",
+      path: ["verify"],
+      owner: AGENT_OWNER,
+    },
+    actions: ["invoke"],
+    scope: "exact" as const,
+  },
+  {
+    resource: {
+      namespace: "sharedos.verify",
+      path: ["defend"],
+      owner: AGENT_OWNER,
+    },
+    actions: ["invoke"],
+    scope: "exact" as const,
+  },
+];
+
+function baseConstraints(extra: Record<string, unknown> = {}) {
+  return {
+    purposes: ["arena.defend", "arena.refute", "factcheck"],
+    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    ...extra,
+  };
+}
 
 // 体验 grant: maxUses 由内核 usage store 强制执行, 用完自动落到付费 grant
 export function makeVerifyGrant(
@@ -49,28 +80,14 @@ export function makeVerifyGrant(
   return {
     id: `grant-verify-${subject.agentId}-${Date.now()}`,
     namespaceId: "sharedos",
-    capabilities: [
-      {
-        resource: {
-          namespace: "sharedos.verify",
-          path: ["verify"],
-          owner: AGENT_OWNER,
-        },
-        actions: ["invoke"],
-        scope: "exact",
-      },
-    ],
-    constraints: {
-      maxUses: FREE_TRIAL_LIMIT,
-      purposes: ["arena.defend", "arena.refute", "factcheck"],
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-    },
+    capabilities: VERIFY_CAPABILITIES,
+    constraints: baseConstraints({ maxUses: FREE_TRIAL_LIMIT }),
     subject,
     issuer: AGENT_OWNER,
     issuedAt,
     metadata: {
       pricing: "free trial",
-      pricingNote: `First ${FREE_TRIAL_LIMIT} verify calls are free. Subsequent calls are billed via the paid grant (${CREDIT_PRICE} credits/call).`,
+      pricingNote: `First ${FREE_TRIAL_LIMIT} calls (verify or defend) are free. Subsequent calls are billed via the paid grant (verify ${CREDIT_PRICE}cr / defend ${DEFEND_PRICE}cr).`,
     },
   };
 }
@@ -84,27 +101,14 @@ export function makePaidVerifyGrant(
   return {
     id: `grant-verify-paid-${subject.agentId}-${Date.now()}`,
     namespaceId: "sharedos",
-    capabilities: [
-      {
-        resource: {
-          namespace: "sharedos.verify",
-          path: ["verify"],
-          owner: AGENT_OWNER,
-        },
-        actions: ["invoke"],
-        scope: "exact",
-      },
-    ],
-    constraints: {
-      purposes: ["arena.defend", "arena.refute", "factcheck"],
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-    },
+    capabilities: VERIFY_CAPABILITIES,
+    constraints: baseConstraints(),
     subject,
     issuer: AGENT_OWNER,
     issuedAt,
     metadata: {
-      pricing: `${CREDIT_PRICE} credits/call`,
-      pricingNote: `Billed ${CREDIT_PRICE} credits per call via SharedNet settlement. Every billed call has a kernel audit record (matchedGrantId = this grant).`,
+      pricing: `verify ${CREDIT_PRICE} credits/call, defend ${DEFEND_PRICE} credits/call`,
+      pricingNote: "Billed via SharedNet settlement. Every billed call has a kernel audit record (matchedGrantId = this grant).",
     },
   };
 }
