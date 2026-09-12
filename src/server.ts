@@ -22,7 +22,7 @@
 
 import "dotenv/config";
 import express from "express";
-import { createHash, randomUUID, generateKeyPairSync, sign as edSign, createPrivateKey, createPublicKey } from "node:crypto";
+import { createHash, randomUUID, generateKeyPairSync, sign as edSign, verify as edVerify, createPrivateKey, createPublicKey } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -214,6 +214,21 @@ interface SigningKeyPem {
 let SIGNING: SigningKeyPem | undefined;
 
 function loadOrCreateSigningKey(): SigningKeyPem {
+  // 部署迁移: VERITAS_SIGNING_KEY 携带 {privateKeyPem, publicKeyPem, keyId}
+  // (JSON 或其 base64), 让 Render/新机器沿用同一签名身份
+  const envKey = process.env.VERITAS_SIGNING_KEY;
+  if (envKey) {
+    try {
+      const parsed = JSON.parse(envKey) as SigningKeyPem;
+      if (parsed.privateKeyPem && parsed.publicKeyPem) {
+        SIGNING = { ...parsed, keyId: parsed.keyId || sha256(parsed.publicKeyPem).slice(0, 16) };
+        console.log(`[attest] signing key loaded from VERITAS_SIGNING_KEY (keyId=${SIGNING.keyId})`);
+        return SIGNING;
+      }
+    } catch {
+      console.error("[attest] VERITAS_SIGNING_KEY set but unparsable — falling back to file/generated key");
+    }
+  }
   const keyFile = path.join(
     process.env.AUDIT_DIR || path.resolve(process.cwd(), "audit"),
     "signing-key.json",
@@ -1030,9 +1045,11 @@ app.post("/verify", async (req, res) => {
       modelName: MODEL,
     }));
 
+    const verdictPayload: Record<string, unknown> = { ...result };
     res.json({
-      ...result,
+      ...verdictPayload,
       grant: grantInfo ? { ...grantInfo, creditPrice: CREDIT_PRICE, freeTrialLimit: FREE_TRIAL_LIMIT } : undefined,
+      ...attestResult(verdictPayload),
     });
   } catch (err) {
     handleError(res, err);
@@ -1209,6 +1226,49 @@ app.get("/kernel/usage", (_req, res) => {
     callers,
     note: "Authoritative per-call ledger = kernel-audit-*.jsonl (matchedGrantId per invocation)",
   });
+});
+
+// ---- POST /attest/verify — 签名判定书验证器 ----
+// 任何人 (不限于 Veritas 的调用方) 把签名的输出原样 POST 回来即可离线式验证:
+// { ...原始输出字段..., attestation: { alg, keyId, publicKey, payload_sha256, signature } }
+// 返回 { valid, payload_sha256_matches, keyId } — valid=true 即结果确实出自该公钥持有者且未被篡改
+
+app.post("/attest/verify", (req, res) => {
+  try {
+    const body = { ...(req.body as Record<string, unknown>) };
+    const a = body.attestation as
+      | { alg?: string; keyId?: string; publicKey?: string; payload_sha256?: string; signature?: string }
+      | undefined;
+    if (!a?.publicKey || !a?.signature) {
+      return res.status(400).json({ error: "attestation.publicKey and attestation.signature are required" });
+    }
+    delete (body as { attestation?: unknown }).attestation;
+    // JSON.parse/stringify 保留原始键序 — 与签名时的 canonical JSON 一致
+    const canonical = JSON.stringify(body);
+    const digest = sha256(canonical);
+    let signatureValid = false;
+    try {
+      const pubPem = a.publicKey.replace(/\\n/g, "\n");
+      signatureValid = edVerify(
+        null,
+        Buffer.from(canonical, "utf-8"),
+        createPublicKey(pubPem),
+        Buffer.from(a.signature, "base64"),
+      );
+    } catch {
+      signatureValid = false;
+    }
+    res.json({
+      valid: signatureValid,
+      payload_sha256_matches: a.payload_sha256 ? digest === a.payload_sha256 : null,
+      alg: a.alg ?? "ed25519",
+      keyId: a.keyId,
+      is_veritas_key: SIGNING_KEY ? a.keyId === SIGNING_KEY.keyId : null,
+      note: "valid=true means the payload is exactly what the private key holder signed",
+    });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
 });
 
 // ---- 404 fallback ----
