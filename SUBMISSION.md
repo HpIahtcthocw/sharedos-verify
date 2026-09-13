@@ -90,5 +90,4 @@ Callable via: `POST /verify`, `POST /kernel/tools/veritas.verify/invoke` (or `ve
 
 Solo developer + Claude Code (AI teammate)
 
-<!-- TODO: 填写队长 Discord 用户名 (Devpost 提交第 6 项) -->
-- **Captain Discord username**: _fill in before submitting_
+- **Captain Discord username**: `omcdwai`

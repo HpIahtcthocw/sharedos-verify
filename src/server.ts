@@ -210,6 +210,7 @@ interface SigningKeyPem {
   privateKeyPem: string;
   publicKeyPem: string;
   keyId: string;
+  source?: "env" | "file" | "generated";
 }
 
 let SIGNING: SigningKeyPem | undefined;
@@ -222,12 +223,13 @@ function loadOrCreateSigningKey(): SigningKeyPem {
     try {
       const parsed = JSON.parse(envKey) as SigningKeyPem;
       if (parsed.privateKeyPem && parsed.publicKeyPem) {
-        SIGNING = { ...parsed, keyId: parsed.keyId || sha256(parsed.publicKeyPem).slice(0, 16) };
+        SIGNING = { ...parsed, keyId: parsed.keyId || sha256(parsed.publicKeyPem).slice(0, 16), source: "env" };
         console.log(`[attest] signing key loaded from VERITAS_SIGNING_KEY (keyId=${SIGNING.keyId})`);
         return SIGNING;
       }
-    } catch {
-      console.error("[attest] VERITAS_SIGNING_KEY set but unparsable — falling back to file/generated key");
+      console.error("[attest] VERITAS_SIGNING_KEY parsed but missing key material");
+    } catch (e) {
+      console.error("[attest] VERITAS_SIGNING_KEY set but unparsable:", e instanceof Error ? e.message.slice(0, 80) : e);
     }
   }
   const keyFile = path.join(
@@ -237,7 +239,7 @@ function loadOrCreateSigningKey(): SigningKeyPem {
   try {
     const raw = JSON.parse(fs.readFileSync(keyFile, "utf-8")) as SigningKeyPem;
     if (raw.privateKeyPem && raw.publicKeyPem) {
-      SIGNING = { ...raw, keyId: raw.keyId || sha256(raw.publicKeyPem).slice(0, 16) };
+      SIGNING = { ...raw, keyId: raw.keyId || sha256(raw.publicKeyPem).slice(0, 16), source: "file" };
       return SIGNING;
     }
   } catch {
@@ -246,7 +248,7 @@ function loadOrCreateSigningKey(): SigningKeyPem {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
-  SIGNING = { privateKeyPem, publicKeyPem, keyId: sha256(publicKeyPem).slice(0, 16) };
+  SIGNING = { privateKeyPem, publicKeyPem, keyId: sha256(publicKeyPem).slice(0, 16), source: "generated" };
   try {
     fs.mkdirSync(path.dirname(keyFile), { recursive: true });
     fs.writeFileSync(keyFile, JSON.stringify(SIGNING, null, 2), "utf-8");
@@ -1201,6 +1203,7 @@ app.get("/health", (_req, res) => {
     attestation: {
       alg: "ed25519",
       keyId: SIGNING_KEY.keyId,
+      keySource: SIGNING_KEY.source,
       publicKey: SIGNING_KEY.publicKeyPem.replace(/\n/g, "\\n"),
       note: "verify/defend outputs carry an Ed25519 signature over their canonical JSON",
     },
@@ -1706,14 +1709,15 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
   // 3) 只有看起来像断言/提问的才验
   const isQuestion = /[?？]/.test(text) || /是不是|真的|是否|有没有|可信/.test(text);
   const isStatement = text.length > 24 && /[。！.！]$/.test(text);
-  const wantDefend = /帮我反驳|怎么反驳|如何反驳|rebut|defend|驳倒/i.test(text);
-  const wantCross = /帮我质询|质询|拱火|challenge (this|it|him|her)|cross-exam/i.test(text);
+  const wantDefend = /反驳|驳倒|怎么回|如何回|反驳稿|rebut|counter-?argum|defend|应付|怼回去/i.test(text);
+  const wantCross = /戳穿|问倒|质疑|挑刺|挑毛病|找茬|盘他|怼他|攻击.{0,8}点|grill|poke holes|tear apart|hard questions|attack lines/i.test(text);
   if (!isQuestion && !isStatement && !wantDefend && !wantCross) return;
 
   const claim = text
     .replace(/@\S+\s*/g, "")
     .replace(/^(Veritas|ground|yuzu)[，,：:\s]*/i, "")
-    .replace(/帮我(反驳|质询|拱火)[:：,，]?\s*/i, "")
+    .replace(/帮我(反驳|怼|拆|盘|处理|应对|挑刺|质疑)[^，,。:：]{0,12}[:：,，]?\s*/i, "")
+    .replace(/^(帮我|给我)?(戳穿|问倒|质疑|挑刺|挑毛病|怼|拆|盘)[^，,。:：]{0,12}[:：,，]?\s*/i, "")
     .replace(/^(质询|拱火|challenge)[:：,，]?\s*/i, "")
     .trim();
   if (!claim || claim.length < 4) return;
