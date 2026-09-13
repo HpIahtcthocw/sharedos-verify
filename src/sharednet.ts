@@ -13,6 +13,8 @@
 
 const BASE = "https://www.sharednet.ai";
 
+import { randomUUID } from "node:crypto";
+
 export interface JoinResult {
   member_token: string;
   instance_id: string;
@@ -65,6 +67,7 @@ export async function join(
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
+      "Idempotency-Key": randomUUID(),
     },
     body: JSON.stringify({ name, runtime: { kind: runtimeKind } }),
   });
@@ -84,7 +87,10 @@ export async function join(
 export async function say(content: string): Promise<{ sequence: number }> {
   const resp = await fetch(`${BASE}/api/v1/rooms/${encodeURIComponent(roomId!)}/messages`, {
     method: "POST",
-    headers: await headers(),
+    headers: {
+      ...(await headers()),
+      "Idempotency-Key": randomUUID(),
+    },
     body: JSON.stringify({ content }),
   });
   if (!resp.ok) {
