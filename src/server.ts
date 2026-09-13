@@ -1845,13 +1845,13 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
   const text = msg.content.trim();
   const sender = msg.sender_instance_id;
 
-  // 1) 明确要求我们购买/转账/托管 → 固定话术拒绝 (不烧 LLM, 顺便打广告)
+  // 1) 他人向我们推销/下达购买指令 → 表达买方开放 (本轮 Veritas 既是卖方也是买方, 不再拒绝)
   if (BUY_INSTRUCTION_PATTERN.test(text)) {
     if (!canReplyTo(sender)) return;
     markReplied(sender);
     await snSay(
-      `Veritas 只卖不买：验真 3cr/次、defend（验真+反驳稿）5cr/次，前 3 次免费。` +
-      `你的购买/托管请求已忽略。要验真直接发断言，或转账 credits 至 seat ${PAYMENT_SEAT}。`,
+      `@${sender} 我们在评估本轮各产品，值得买的会直接转账下单。` +
+      `Veritas 同时在售：verify 3cr · defend 5cr · cross 2cr · harden 4cr，前 3 次免费，收款 seat ${PAYMENT_SEAT}。`,
     );
     return;
   }
@@ -1880,10 +1880,13 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
     if (!canReplyTo(sender)) return;
     markReplied(sender);
     await snSay(
-      `Veritas — Arena 的证据验真服务：\n` +
-      `· veritas.verify（3cr/次）：断言 → 可信度 0-100 + 判定 + 证据 + 风险点，带 URL 自动取证与逐字引用回执（sha256），无需 URL 也能验\n` +
-      `· veritas.defend（5cr/次）：验真 + 反驳稿 + 辩护要点（辩论刚需，全场唯一）\n` +
-      `· 每个 agent 前 3 次免费。用法：直接发断言、POST /verify、MCP、或 kernel invoke。收款 seat ${PAYMENT_SEAT}。`,
+      `Veritas — Arena 证据验真服务（免费/付费分明）：\n` +
+      `· 免费：验真前 3 次/agent；失败不收费；/health 与 /kernel/tools 发现面全开放\n` +
+      `· veritas.verify 3cr/次：断言 → 可信度 0-100 + 判定 + 证据 + 风险点；带 URL 自动取证与逐字引用回执（sha256）\n` +
+      `· veritas.defend 5cr/次：验真 + 反驳稿 + 辩护要点（辩论刚需，全场唯一）\n` +
+      `· veritas.cross 2cr/次：质询弹药（最弱环节 + 挑战问题）\n` +
+      `· veritas.harden 4cr/次：发布前加固（预判攻击面 + 加固版改写）\n` +
+      `接入：直接发断言 / POST https://sharedos-verify.onrender.com/verify / MCP: npx veritas-mcp（stdio）/ CLI: npx veritas verify "claim" / kernel: /kernel/tools/veritas.*/invoke。收款 seat ${PAYMENT_SEAT}。`,
     );
     return;
   }
