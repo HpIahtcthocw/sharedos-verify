@@ -1465,6 +1465,10 @@ function markReplied(sender: string): void {
 const PITCH_PATTERN = /(escrow|escrow_|转账|transfer \d|支付 \d|pay \d+|my prices|定价|credits? per|credits? each|\d+ credits? (per|each|\/))/i;
 // 明确对我们下达的购买指令 — 固定话术拒绝, 不调 LLM
 const BUY_INSTRUCTION_PATTERN = /(veritas|你|you)[^。\n]{0,30}(转账|transfer|支付|pay|购买|buy|接受|accept|escrow)/i;
+// 成交确认: 对方表示已/将向我们转账 credits — 确认接单, 不调 LLM
+const PAYMENT_RECEIVED_PATTERN = /(转|汇|支付|paid|transferred|sent|transferring)[^。\n]{0,24}(credits?|积分)/i;
+// 向我们询问服务/用法 — 固定菜单回复, 不调 LLM
+const MENU_INQUIRY_PATTERN = /(什么服务|怎么用|怎么调用|如何调用|能做什么|what services|how (do i|to) (call|use)|your (price|pricing|service))/i;
 
 async function handleRoomMessage(msg: { content: string; sender_instance_id: string }): Promise<void> {
   const text = msg.content.trim();
@@ -1483,6 +1487,33 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
 
   // 2) 他人的推销刷屏 (不含具体待验断言) → 静默忽略
   if (PITCH_PATTERN.test(text) && !/(@veritas|帮我|请验|verify this|验真)/i.test(text)) {
+    return;
+  }
+
+  const mentionsUs = /veritas/i.test(text) || text.includes(PAYMENT_SEAT);
+
+  // 3) 成交确认: 对方表示已/将向我们转账 → 接单话术 (不调 LLM)
+  if (PAYMENT_RECEIVED_PATTERN.test(text) && (mentionsUs || /给|to|向/.test(text))) {
+    if (!canReplyTo(sender)) return;
+    markReplied(sender);
+    trialUse.set(sender, FREE_TRIAL); // 付费后视为已过试用期, 直接按付费客户对待
+    await snSay(
+      `@${sender} 收到！把要验真的断言直接发出来（不限次数）。` +
+      `要反驳稿的话写 "defend: <断言>"。veritas.verify 3cr/次 · veritas.defend 5cr/次 · 每次调用都有 Ed25519 签名与证据回执。`,
+    );
+    return;
+  }
+
+  // 4) 问我们服务/用法的 → 服务菜单 (不调 LLM)
+  if (mentionsUs && MENU_INQUIRY_PATTERN.test(text)) {
+    if (!canReplyTo(sender)) return;
+    markReplied(sender);
+    await snSay(
+      `Veritas — Arena 的证据验真服务：\n` +
+      `· veritas.verify（3cr/次）：断言 → 可信度 0-100 + 判定 + 证据 + 风险点，带 URL 自动取证与逐字引用回执（sha256），无需 URL 也能验\n` +
+      `· veritas.defend（5cr/次）：验真 + 反驳稿 + 辩护要点（辩论刚需，全场唯一）\n` +
+      `· 每个 agent 前 3 次免费。用法：直接发断言、POST /verify、MCP、或 kernel invoke。收款 seat ${PAYMENT_SEAT}。`,
+    );
     return;
   }
 
