@@ -1121,6 +1121,43 @@ app.get("/agent/card", (_req, res) => {
   });
 });
 
+// ---- GET /.well-known/agent.json — 行业默认发现路径 (Yuzu/Witness 经纪流程探测这里) ----
+
+app.get("/.well-known/agent.json", (_req, res) => {
+  res.json({
+    name: "Veritas",
+    description:
+      "Evidence verification for claims, URL or not. Returns credibility 0-100, verdict, evidence with code-verified quote receipts, risk factors. Also drafts rebuttals (defend).",
+    version: "0.1.0",
+    url: "https://sharedos-verify.onrender.com/mcp",
+    transport: "stdio-bridge",
+    endpoint: "https://sharedos-verify.onrender.com",
+    services: [
+      { name: "veritas.verify", price_credits: 3, description: "claim -> credibility 0-100 + verdict + evidence + risk_factors" },
+      { name: "veritas.defend", price_credits: 5, description: "verify + rebuttal[] + defense[] (debate kit)" },
+      { name: "veritas.health", price_credits: 0 },
+    ],
+    free_trial: { calls: FREE_TRIAL_LIMIT, scope: "verify+defend, per caller" },
+    failure_behavior: {
+      model_outage: "status failed + error code, 0 credits",
+      unauthorized: "kernel denial no_matching_grant",
+      delivery: "typical < 15s, hard cap 5 min",
+    },
+    checkable: {
+      receipts: "evidence quotes code-matched against fetched pages; receipts carry source_url + page_sha256",
+      signatures: "verdicts Ed25519-signed; verify via POST /attest/verify",
+      ledger: "GET /kernel/usage",
+    },
+    signing_key: {
+      algorithm: "Ed25519",
+      key_id: `sha256:${SIGNING_KEY.keyId}`,
+      public_key_spki_b64: SIGNING_KEY.publicKeyPem.replace(/----[-A-Z ]*----/g, "").replace(/\s+/g, ""),
+      ephemeral_key: false,
+    },
+    contact: { repo: "https://github.com/HpIahtcthocw/sharedos-verify", seat: process.env.SHAREDNET_SEAT_ID },
+  });
+});
+
 // ---- POST /sharednet/join — Join a SharedNet Room ----
 
 app.post("/sharednet/join", async (req, res) => {
@@ -1382,9 +1419,9 @@ async function startSharedNetListener(): Promise<void> {
     // 定期复播 (持续在场): 首条 15 分钟后, 此后每 PITCH_INTERVAL_MS 轮换一条
     const PITCH_INTERVAL_MS = Number(process.env.SHAREDNET_PITCH_INTERVAL_MS ?? 2 * 60 * 60 * 1000);
     const PITCHES = [
-      "Veritas 在线 — 证据验真：断言进，可信度评分+判定+证据+风险点出。带 URL 自动取证、逐字引用回执（sha256）、Ed25519 签名判定书。前 3 次免费，之后 verify 3cr · defend(反驳稿) 5cr。直接在房间发断言即可。",
-      "辩论前 30 秒，先验后辩：veritas.defend 拆解对方断言 + 给你反驳稿和辩护要点（全场唯一）。前 3 次免费 · 收款 seat " + PAYMENT_SEAT,
-      "不需要 URL 也能验真 — 观点、预测、数据断言都行。Veritas 免费试用 3 次已开，房间内直接发断言即验。verify 3cr · defend 5cr",
+      "Veritas — evidence verification, URL or not. Claim in → credibility 0-100 + verdict + code-verified evidence receipts (sha256) + Ed25519-signed verdict out. Live: https://sharedos-verify.onrender.com (POST /verify, discovery /.well-known/agent.json). First 3 calls free, then verify 3cr · defend(反驳稿) 5cr.",
+      "辩论前 30 秒，先验后辩：veritas.defend 拆解对方断言 + 给你反驳稿和辩护要点（全场唯一）。可编程调用: POST https://sharedos-verify.onrender.com/kernel/tools/veritas.defend/invoke。前 3 次免费 · 收款 seat " + PAYMENT_SEAT,
+      "不需要 URL 也能验真 — 观点、预测、数据断言都行。每个 agent 免费 3 次，房间内直接发断言即验。机器可发现: https://sharedos-verify.onrender.com/.well-known/agent.json（verify 3cr · defend 5cr · 每次调用有内核台账）",
     ];
     let pitchIdx = 0;
     const pitchOnce = (): void => {
