@@ -1633,8 +1633,9 @@ async function selfVerify(claim: string, context?: string, tool: "veritas.verify
 
 const FREE_TRIAL = FREE_TRIAL_LIMIT;
 const PAYMENT_SEAT = process.env.SHAREDNET_SEAT_ID || "i_vWM2I80p5v";
-const PER_SENDER_COOLDOWN_MS = 45_000;
-const MAX_REPLIES_PER_HOUR = 24;
+const PER_SENDER_COOLDOWN_MS = 30_000;
+// Arena 高峰期 (辩论/市场) 消息量大: 默认 60 条/小时, 可用环境变量调整
+const MAX_REPLIES_PER_HOUR = Number(process.env.SHAREDNET_MAX_REPLIES_PER_HOUR) || 60;
 
 const trialUse = new Map<string, number>();
 const lastReplyAt = new Map<string, number>();
