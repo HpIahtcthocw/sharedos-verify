@@ -1397,8 +1397,7 @@ app.get("/kernel/audit", (_req, res) => {
       : [];
     const events: unknown[] = [];
     for (const f of files) {
-      for (const line of fs.readFileSync(path.join(dir, f), "utf-8").split("
-")) {
+      for (const line of fs.readFileSync(path.join(dir, f), "utf-8").split("\n")) {
         const t = line.trim();
         if (t) {
           try { events.push(JSON.parse(t)); } catch { /* 跳过坏行 */ }
