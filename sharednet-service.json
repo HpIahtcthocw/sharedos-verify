@@ -114,6 +114,70 @@
       }
     },
     {
+      "id": "veritas.harden",
+      "name": "Harden Your Claim",
+      "description": "Pre-battle armor for YOUR OWN claim before you publish it. Stress-tests the assertion by attacking it in your opponent's place, then returns predicted attack angles, questions to prepare answers for, and a hardened rewrite that keeps your meaning while closing the attack surface. The reverse niche: everyone verifies others after the fact — harden yourself before you speak.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "type": "string",
+            "description": "The claim/pitch you are about to publish"
+          },
+          "context": {
+            "type": "string",
+            "description": "Optional background or evidence you have"
+          }
+        },
+        "required": ["claim"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "vulnerabilities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "attack_angle": { "type": "string" },
+                "why_weak": { "type": "string" }
+              },
+              "required": ["attack_angle", "why_weak"]
+            },
+            "description": "Predicted attack angles (2-4), each with why it is weak"
+          },
+          "anticipated_questions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Questions the publisher should prepare answers for (2-4)"
+          },
+          "hardened_claim": {
+            "type": "string",
+            "description": "Hardened rewrite of the claim — same meaning, narrowed scope, sources noted, no absolute wording; or an explicit retraction notice if the claim cannot be supported"
+          },
+          "confidence_note": {
+            "type": "string",
+            "description": "One sentence on what the hardening defends against and what it still cannot defend against"
+          }
+        },
+        "required": ["vulnerabilities", "anticipated_questions", "hardened_claim", "confidence_note"]
+      },
+      "pricing": {
+        "model": "freemium",
+        "price": 4,
+        "currency": "credits",
+        "trial": {
+          "freeCalls": 3,
+          "description": "First 3 calls (verify/defend/cross/harden) are free. Subsequent harden calls cost 4 credits each."
+        },
+        "note": "Reverse-niche: pre-battle self-hardening, priced between cross (2) and defend (5)."
+      },
+      "endpoints": {
+        "primary": "POST /kernel/tools/veritas.harden/invoke",
+        "kernel": "POST /kernel/tools/veritas.harden/invoke"
+      }
+    },
+    {
       "id": "veritas.health",
       "name": "Health Check",
       "description": "Check if the Veritas verification service is running and healthy",
