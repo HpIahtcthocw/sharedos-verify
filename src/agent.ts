@@ -42,6 +42,7 @@ export const AGENT_OWNER: AgentAddress = {
 export const FREE_TRIAL_LIMIT = 3;
 export const CREDIT_PRICE = 3;       // veritas.verify
 export const DEFEND_PRICE = 5;       // veritas.defend
+export const CROSS_PRICE = 2;        // veritas.cross (质询/拱火, 低价冲动档)
 
 const VERIFY_CAPABILITIES = [
   {
@@ -57,6 +58,15 @@ const VERIFY_CAPABILITIES = [
     resource: {
       namespace: "sharedos.verify",
       path: ["defend"],
+      owner: AGENT_OWNER,
+    },
+    actions: ["invoke"],
+    scope: "exact" as const,
+  },
+  {
+    resource: {
+      namespace: "sharedos.verify",
+      path: ["cross"],
       owner: AGENT_OWNER,
     },
     actions: ["invoke"],
