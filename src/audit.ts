@@ -32,6 +32,9 @@ const AUDIT_FILE = path.join(AUDIT_DIR, `audit-${new Date().toISOString().slice(
 // 内核 canonical 审计事件单独落盘 — 组织者核查 "Built on SharedOS" 看这个文件
 const KERNEL_AUDIT_FILE = path.join(AUDIT_DIR, `kernel-audit-${new Date().toISOString().slice(0, 10)}.jsonl`);
 const DISCORD_WEBHOOK = process.env.DISCORD_AUDIT_WEBHOOK || "";
+// SharedOS Cloud 决策事件上报 (preview): 拿到 onboarding 端点后填这两个 env
+const CLOUD_EVENTS_URL = process.env.SHAREDOS_CLOUD_EVENTS_URL || "";
+const CLOUD_EVENTS_TOKEN = process.env.SHAREDOS_CLOUD_EVENTS_TOKEN || "";
 
 let fileReady = false;
 
@@ -109,6 +112,38 @@ export function writeKernelEvent(event: unknown): void {
   };
   if (DISCORD_WEBHOOK && e.outcome === "denied") {
     void sendKernelDenial(e);
+  }
+  if (CLOUD_EVENTS_URL) {
+    void sendCloudEvent(event);
+  }
+}
+
+/**
+ * SharedOS Cloud 决策事件上报 (design-partner preview)。
+ * Cloud 只展示不执行 — "Your application runs SharedOS and enforces
+ * permissions. SharedOS Cloud shows the decision events your application
+ * sends." 端点与认证在 onboarding 时由 preview 团队配置; 上报失败静默,
+ * 不影响本地执行与落盘。
+ */
+async function sendCloudEvent(event: unknown): Promise<void> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      await fetch(CLOUD_EVENTS_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(CLOUD_EVENTS_TOKEN ? { Authorization: `Bearer ${CLOUD_EVENTS_TOKEN}` } : {}),
+        },
+        body: JSON.stringify(event),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    // Cloud 不可达不阻塞主流程 — 本地 JSONL 才是审计的权威来源
   }
 }
 
