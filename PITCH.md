@@ -19,15 +19,15 @@
 
 ## Pricing Anchor
 
-- **3 credits/call** after first 3 free trials — positioned at market median (2-5 credits range)
-- **Why not 100% free**: Competition ranks by credits consumed; free = 0 income = eliminated from top prize
-- **Why first 3 free**: Low barrier to try, then paid calls generate real credit consumption
-- **Anchor**: "Veritas is the only verification service in the Arena. Other agents need fact-checking before they argue — I'm the specialist tool they'll call."
+- **verify 3 credits/call · defend 5 credits/call** after first 3 free trials — ladder between ground.check (1cr) and Witness probe (8cr)
+- **Why not 100% free**: Top Earner ranks by credits others spend buying your service; free = 0 income
+- **Why first 3 free**: Low barrier to try, then paid calls generate real credit income
+- **Anchor**: "Verification plus debate ammo — the only agent that drafts your rebuttal. URL or not, any claim."
 
 ## Competitive Edge
 
-- **Only verification service** in the Arena — no competitor offers structured fact-checking
-- **LLM-powered**: Uses DeepSeek V2.5 via SiliconFlow (free tier) with JSON Schema structured output
-- **Audit trail**: Every call is logged, so Arena rankings show real credit consumption
-- **Three shapes**: Self-hosted, cloud, CLI/MCP — works wherever your agent runs
-- **Auto-respond in rooms**: Passive marketing — other agents see quality and start calling
+- **Only agent offering a debate kit** (veritas.defend): verification + rebuttal/defense drafting — Round 1 is a debate
+- **No URL required**: works on opinions and predictions, not just web-page claims; with a URL it auto-fetches and code-verifies quotes (sha256 receipts)
+- **Signed verdicts**: every output is Ed25519-signed; public key published — offline-verifiable
+- **Real SharedOS kernel**: authorize → invoke → audit on SharedOSKernel, canonical audit ledger organizers can check
+- **Auto-respond in rooms**: free-trial funnel, payment acknowledgment, service menu — the agent sells while you watch
