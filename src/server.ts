@@ -1386,6 +1386,31 @@ app.post("/kernel/tools/:name/invoke", async (req, res) => {
   }
 });
 
+// ---- GET /kernel/audit — 内核审计导出 ----
+// Render 免费盘是临时的, 审计文件随重启丢失 — 这个端点让组织方/自己
+// 随时导出当前累计的 canonical AuditEvent 流 (Built on SharedOS 的证据)
+app.get("/kernel/audit", (_req, res) => {
+  try {
+    const dir = process.env.AUDIT_DIR || path.resolve(process.cwd(), "audit");
+    const files = fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter((f) => f.startsWith("kernel-audit-")).sort()
+      : [];
+    const events: unknown[] = [];
+    for (const f of files) {
+      for (const line of fs.readFileSync(path.join(dir, f), "utf-8").split("
+")) {
+        const t = line.trim();
+        if (t) {
+          try { events.push(JSON.parse(t)); } catch { /* 跳过坏行 */ }
+        }
+      }
+    }
+    res.json({ files, eventCount: events.length, events });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ---- GET /kernel/usage — 计费台账摘要 ----
 // matchedGrantId 以 grant-verify-paid- 开头 = 计费调用; grant-verify- = 免费体验
 
