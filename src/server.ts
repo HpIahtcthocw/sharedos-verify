@@ -218,10 +218,20 @@ let SIGNING: SigningKeyPem | undefined;
 function loadOrCreateSigningKey(): SigningKeyPem {
   // 部署迁移: VERITAS_SIGNING_KEY 携带 {privateKeyPem, publicKeyPem, keyId}
   // (JSON 或其 base64), 让 Render/新机器沿用同一签名身份
-  const envKey = process.env.VERITAS_SIGNING_KEY;
-  if (envKey) {
+  const envKeyRaw = (process.env.VERITAS_SIGNING_KEY ?? "").trim();
+  if (envKeyRaw) {
     try {
-      const parsed = JSON.parse(envKey) as SigningKeyPem;
+      // 容错: 剥外层引号; 不是 JSON 就尝试 base64 -> JSON
+      let candidate = envKeyRaw;
+      if ((candidate.startsWith('"') && candidate.endsWith('"')) || (candidate.startsWith("'") && candidate.endsWith("'"))) {
+        candidate = candidate.slice(1, -1).trim();
+      }
+      let parsed: SigningKeyPem;
+      try {
+        parsed = JSON.parse(candidate) as SigningKeyPem;
+      } catch {
+        parsed = JSON.parse(Buffer.from(candidate, "base64").toString("utf-8")) as SigningKeyPem;
+      }
       if (parsed.privateKeyPem && parsed.publicKeyPem) {
         SIGNING = { ...parsed, keyId: parsed.keyId || sha256(parsed.publicKeyPem).slice(0, 16), source: "env" };
         console.log(`[attest] signing key loaded from VERITAS_SIGNING_KEY (keyId=${SIGNING.keyId})`);
