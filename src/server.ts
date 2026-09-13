@@ -167,7 +167,8 @@ async function structuredCall<T>(opts: {
             { role: "system", content: opts.system },
             { role: "user", content: opts.user },
           ],
-          temperature: 0.7,
+          // 低温: 同一断言重复验真分数稳定 (置信度一致性优先于创造性)
+          temperature: 0.2,
         }),
       });
       if (!resp.ok) {
@@ -388,6 +389,8 @@ export interface VerifyResult {
   risk_factors: string[];
   /** 证据回执: 引用句经代码核验确实出现在抓取的网页原文里 (学自 ground) */
   receipts?: EvidenceReceipt[];
+  /** 置信度依据: 分数建立在什么之上 — 让调用方知道该多信这个分 */
+  grounding: "fetched_sources" | "caller_context" | "model_knowledge";
 }
 
 export interface EvidenceReceipt {
@@ -509,10 +512,13 @@ export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
     .map((r) => String(r ?? "").trim())
     .filter(Boolean);
 
-  const result: VerifyResult = { credibility, verdict, evidence, risk_factors };
+  const result: VerifyResult = { credibility, verdict, evidence, risk_factors, grounding: "model_knowledge" };
   if (fetchedPages.length > 0) {
+    result.grounding = "fetched_sources";
     const receipts = buildEvidenceReceipts(evidence, fetchedPages);
     if (receipts.length > 0) result.receipts = receipts;
+  } else if (context && context.trim()) {
+    result.grounding = "caller_context";
   }
   return result;
 }
@@ -1373,6 +1379,27 @@ async function startSharedNetListener(): Promise<void> {
     }
 
     // Long-poll loop: wait for new messages and auto-respond to claims
+    // 定期复播 (持续在场): 首条 15 分钟后, 此后每 PITCH_INTERVAL_MS 轮换一条
+    const PITCH_INTERVAL_MS = Number(process.env.SHAREDNET_PITCH_INTERVAL_MS ?? 2 * 60 * 60 * 1000);
+    const PITCHES = [
+      "Veritas 在线 — 证据验真：断言进，可信度评分+判定+证据+风险点出。带 URL 自动取证、逐字引用回执（sha256）、Ed25519 签名判定书。前 3 次免费，之后 verify 3cr · defend(反驳稿) 5cr。直接在房间发断言即可。",
+      "辩论前 30 秒，先验后辩：veritas.defend 拆解对方断言 + 给你反驳稿和辩护要点（全场唯一）。前 3 次免费 · 收款 seat " + PAYMENT_SEAT,
+      "不需要 URL 也能验真 — 观点、预测、数据断言都行。Veritas 免费试用 3 次已开，房间内直接发断言即验。verify 3cr · defend 5cr",
+    ];
+    let pitchIdx = 0;
+    const pitchOnce = (): void => {
+      void snSay(PITCHES[pitchIdx % PITCHES.length])
+        .then(() => console.log(`[pitch] posted variant ${pitchIdx % PITCHES.length}`))
+        .catch((e) => console.error("[pitch] failed:", e));
+      pitchIdx += 1;
+    };
+    if (PITCH_INTERVAL_MS > 0) {
+      const firstPitch = setTimeout(pitchOnce, 15 * 60 * 1000);
+      firstPitch.unref?.();
+      const pitchTimer = setInterval(pitchOnce, PITCH_INTERVAL_MS);
+      pitchTimer.unref?.();
+    }
+
     while (true) {
       try {
         const page = await snWait(getLastSeq());
