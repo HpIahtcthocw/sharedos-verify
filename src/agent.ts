@@ -45,6 +45,13 @@ export const DEFEND_PRICE = 5;       // veritas.defend
 export const CROSS_PRICE = 2;        // veritas.cross (质询/拱火, 低价冲动档)
 export const HARDEN_PRICE = 4;       // veritas.harden (赛前加固 — 反方向生态位)
 
+// ---- 分层产品线 (学自 Ground: 低价高频入口 → 高价主力复购) ----
+// 快判引擎为 Jev System One (70-500ms / 近零成本), 让 1-2cr 档也能盈利。
+export const QUICK_PRICE = 1;        // veritas.quickcheck — Jev 快判, 只出分 (高频入口)
+export const CHECK_PRICE = 2;        // veritas.check — Jev + 模板证据 + 页面哈希回执
+export const ATTEST_PRICE = 8;       // veritas.attest — 完整验真 + Ed25519 签名判定书
+export const CERTIFY_PRICE = 15;     // veritas.certify — 多来源代码核对 + 原文摘录 + 签名 (对标 ground.certify)
+
 const VERIFY_CAPABILITIES = [
   {
     resource: {
@@ -77,6 +84,42 @@ const VERIFY_CAPABILITIES = [
     resource: {
       namespace: "sharedos.verify",
       path: ["harden"],
+      owner: AGENT_OWNER,
+    },
+    actions: ["invoke"],
+    scope: "exact" as const,
+  },
+  {
+    resource: {
+      namespace: "sharedos.verify",
+      path: ["quickcheck"],
+      owner: AGENT_OWNER,
+    },
+    actions: ["invoke"],
+    scope: "exact" as const,
+  },
+  {
+    resource: {
+      namespace: "sharedos.verify",
+      path: ["check"],
+      owner: AGENT_OWNER,
+    },
+    actions: ["invoke"],
+    scope: "exact" as const,
+  },
+  {
+    resource: {
+      namespace: "sharedos.verify",
+      path: ["attest"],
+      owner: AGENT_OWNER,
+    },
+    actions: ["invoke"],
+    scope: "exact" as const,
+  },
+  {
+    resource: {
+      namespace: "sharedos.verify",
+      path: ["certify"],
       owner: AGENT_OWNER,
     },
     actions: ["invoke"],

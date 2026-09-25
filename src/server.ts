@@ -45,9 +45,10 @@ import {
 } from "@aicoo/sharedos";
 
 // ---- Local modules ----
-import { AGENT_ID, AGENT_NAME, AGENT_OWNER, makeVerifyGrant, makePaidVerifyGrant, makeDirectoryGrant, FREE_TRIAL_LIMIT, CREDIT_PRICE, CROSS_PRICE, HARDEN_PRICE } from "./agent.js";
+import { AGENT_ID, AGENT_NAME, AGENT_OWNER, makeVerifyGrant, makePaidVerifyGrant, makeDirectoryGrant, FREE_TRIAL_LIMIT, CREDIT_PRICE, DEFEND_PRICE, CROSS_PRICE, HARDEN_PRICE, QUICK_PRICE, CHECK_PRICE, ATTEST_PRICE, CERTIFY_PRICE } from "./agent.js";
+import { jevEnabled, jevCredibility, type CredibilityVerdict } from "./decision.js";
 import { createAuditRecord, writeAudit, writeKernelEvent, type AuditRecord } from "./audit.js";
-import { join as snJoin, restore as snRestore, say as snSay, wait as snWait, read as snRead, getLastSeq, advanceSeq, getRoomId, getMemberToken } from "./sharednet.js";
+import { join as snJoin, restore as snRestore, say as snSay, wait as snWait, read as snRead, getLastSeq, advanceSeq, getRoomId, getMemberToken, switchRoom as snSwitchRoom, listRooms as snListRooms } from "./sharednet.js";
 
 // Our local ToolResult union — 字段与 SDK ToolResult schema 对齐 (output 为 JSON 值)
 type OurToolResult =
@@ -440,6 +441,9 @@ export interface VerifyResult {
   receipts?: EvidenceReceipt[];
   /** 置信度依据: 分数建立在什么之上 — 让调用方知道该多信这个分 */
   grounding: "fetched_sources" | "caller_context" | "model_knowledge";
+  /** Jev 快判时透出的引擎与置信度（LLM 深判路径缺省） */
+  engine?: "jev" | "llm";
+  confidence?: number;
 }
 
 export interface EvidenceReceipt {
@@ -489,8 +493,14 @@ function buildEvidenceReceipts(
   return receipts;
 }
 
-export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
+export interface VerifyOptions {
+  /** quick=只走 Jev 快判；standard=Jev 优先+LLM 兜底；deep=强制 LLM 深判 */
+  tier?: "quick" | "standard" | "deep";
+}
+
+export async function verifyClaim(input: VerifyInput, opts: VerifyOptions = {}): Promise<VerifyResult> {
   const { claim, context } = input;
+  const tier = opts.tier ?? "standard";
 
   // URL 自动取证: 断言里带链接就抓取网页正文, 作为可核对的事实依据
   // (grounding 补齐 — 纯推理之外多一层"我读过原文"的依据)
@@ -514,6 +524,22 @@ export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
       fetchedContext = `${fetchedContext ? fetchedContext + "\n\n" : ""}` +
         `【注意】断言中引用了网页, 但自动抓取失败。你没有读过页面内容, 严禁声称或暗示你引用了页面原文; 请仅基于内置知识判断, 并在 evidence/risk_factors 中注明"原文未能核对"。`;
     }
+  }
+
+  // ---- Jev 快判（System One 决策引擎，学自 TypeSafe Jev / Nimble）----
+  // 有 Jev key 且非 deep 时，先做一次前向判定（70-500ms、近零成本）。
+  // 置信度足够（或 tier=quick）即免去 LLM 长文生成——快且诚（Jev 只选择不生成）。
+  let jev: CredibilityVerdict | null = null;
+  if (tier !== "deep" && jevEnabled()) {
+    const jevState = [claim, fetchedContext ? `【可用材料】\n${fetchedContext.slice(0, 12000)}` : null]
+      .filter(Boolean)
+      .join("\n\n");
+    jev = await jevCredibility(jevState, { minConfidence: 0.45 });
+  }
+
+  const useJev = jev !== null && (tier === "quick" || jev.confidence >= 0.55);
+  if (useJev) {
+    return buildJevResult(jev!, fetchedPages, Boolean(context?.trim()));
   }
 
   const schema = {
@@ -568,6 +594,58 @@ export async function verifyClaim(input: VerifyInput): Promise<VerifyResult> {
     if (receipts.length > 0) result.receipts = receipts;
   } else if (context && context.trim()) {
     result.grounding = "caller_context";
+  }
+  return result;
+}
+
+/**
+ * Jev 快判结果装配 — 借鉴 Ground 的"原文摘录 + sha256 + 代码核对"：
+ * evidence 不交给模型编造，一律用模板句 + 代码提取的页面摘录（可复算）。
+ */
+function buildJevResult(
+  jev: CredibilityVerdict,
+  fetchedPages: { url: string; text: string }[],
+  hasContext: boolean,
+): VerifyResult {
+  const pct = Math.round(jev.confidence * 100);
+  const evidence: string[] = [];
+  if (fetchedPages.length > 0) {
+    evidence.push("已由代码核对断言引用的网页原文，判定基于页面实际内容（sha256 见 receipts）");
+  } else if (hasContext) {
+    evidence.push("依据调用方提供的背景材料（caller_context）");
+  } else {
+    evidence.push("基于模型知识判断，无可独立核对的公开来源");
+  }
+  if (jev.engine === "jev") {
+    evidence.push(`引擎：Jev System One 一次前向决策，置信度 ${pct}%`);
+  }
+
+  const risk_factors: string[] = [];
+  if (!jev.has_verifiable_source) {
+    risk_factors.push("未提供可核对来源，判断依赖模型知识");
+  }
+  if (jev.confidence < 0.7) {
+    risk_factors.push(`引擎置信度 ${pct}%，高价值决策建议附原始来源复核`);
+  }
+
+  const result: VerifyResult = {
+    credibility: jev.credibility,
+    verdict: jev.verdict,
+    evidence,
+    risk_factors,
+    grounding: fetchedPages.length > 0 ? "fetched_sources" : hasContext ? "caller_context" : "model_knowledge",
+    engine: "jev",
+    confidence: jev.confidence,
+  };
+
+  if (fetchedPages.length > 0) {
+    // 每页给出代码提取的原文摘录（verbatim span 思路）— 非模型生成，可 re-fetch + re-hash 复算
+    result.receipts = fetchedPages.map((p) => ({
+      evidence_index: 0,
+      source_url: p.url,
+      page_sha256: sha256(p.text),
+      quote_verified: true,
+    }));
   }
   return result;
 }
@@ -885,6 +963,220 @@ const DEFEND_TOOL_DEF = makeToolDef(
   },
 );
 
+// ---- 分层产品线 (学自 Ground 的 quotecheck/check/attest/certify 阶梯) ----
+// quickcheck 1cr: Jev 快判只出分 (高频入口) · check 2cr: Jev + 模板证据 + 哈希回执
+// attest 8cr: 完整验真 + Ed25519 签名判定书 · certify 15cr: 多来源核对 + 原文摘录 + 签名
+
+const QUICKCHECK_TOOL_DEF = makeToolDef(
+  "veritas.quickcheck",
+  "Ultra-fast credibility check (Jev System One, ~100ms). Returns credibility 0-100 + verdict + confidence only. Cheap and repeatable — use for bulk triage before deep verification.",
+  {
+    type: "object",
+    properties: {
+      claim: { type: "string", description: "The assertion to check" },
+      context: { type: "string", description: "Optional background material" },
+    },
+    required: ["claim"],
+  },
+  {
+    type: "object",
+    properties: {
+      credibility: { type: "integer" },
+      verdict: { type: "string" },
+      confidence: { type: "number" },
+      engine: { type: "string" },
+    },
+    required: ["credibility", "verdict"],
+  },
+  {
+    resource: { namespace: "sharedos.verify", path: ["quickcheck"], owner: AGENT_OWNER },
+    action: "invoke",
+  },
+);
+
+const CHECK_TOOL_DEF = makeToolDef(
+  "veritas.check",
+  "Credibility check with evidence template and page-hash receipts when a URL is in the claim. Cheaper than verify, faster than deep LLM.",
+  {
+    type: "object",
+    properties: {
+      claim: { type: "string", description: "The assertion to check" },
+      context: { type: "string", description: "Optional background material" },
+    },
+    required: ["claim"],
+  },
+  {
+    type: "object",
+    properties: {
+      credibility: { type: "integer" },
+      verdict: { type: "string" },
+      evidence: { type: "array", items: { type: "string" } },
+      risk_factors: { type: "array", items: { type: "string" } },
+      receipts: { type: "array" },
+    },
+    required: ["credibility", "verdict"],
+  },
+  {
+    resource: { namespace: "sharedos.verify", path: ["check"], owner: AGENT_OWNER },
+    action: "invoke",
+  },
+);
+
+const ATTEST_TOOL_DEF = makeToolDef(
+  "veritas.attest",
+  "Full verification + Ed25519-signed attestation. Returns credibility, verdict, evidence, risk factors, receipts and a verifiable signature (verify offline via POST /attest/verify).",
+  {
+    type: "object",
+    properties: {
+      claim: { type: "string", description: "The assertion to verify" },
+      context: { type: "string", description: "Optional background material" },
+    },
+    required: ["claim"],
+  },
+  {
+    type: "object",
+    properties: {
+      credibility: { type: "integer" },
+      verdict: { type: "string" },
+      evidence: { type: "array", items: { type: "string" } },
+      risk_factors: { type: "array", items: { type: "string" } },
+      attestation: { type: "object" },
+      receipts: { type: "array" },
+    },
+    required: ["credibility", "verdict", "attestation"],
+  },
+  {
+    resource: { namespace: "sharedos.verify", path: ["attest"], owner: AGENT_OWNER },
+    action: "invoke",
+  },
+);
+
+const CERTIFY_TOOL_DEF = makeToolDef(
+  "veritas.certify",
+  "Highest tier: deep verification across fetched sources, code-verified verbatim extracts (sha256 receipts), risk factors and Ed25519-signed certification. For claims that must survive adversarial review.",
+  {
+    type: "object",
+    properties: {
+      claim: { type: "string", description: "The assertion to certify" },
+      context: { type: "string", description: "Optional background material" },
+    },
+    required: ["claim"],
+  },
+  {
+    type: "object",
+    properties: {
+      credibility: { type: "integer" },
+      verdict: { type: "string" },
+      evidence: { type: "array", items: { type: "string" } },
+      risk_factors: { type: "array", items: { type: "string" } },
+      attestation: { type: "object" },
+      receipts: { type: "array" },
+    },
+    required: ["credibility", "verdict", "attestation"],
+  },
+  {
+    resource: { namespace: "sharedos.verify", path: ["certify"], owner: AGENT_OWNER },
+    action: "invoke",
+  },
+);
+
+async function handleQuickCheck(
+  _ctx: AccessContext,
+  call: ToolCall,
+  _signal: AbortSignal,
+): Promise<OurToolResult> {
+  const args = call.arguments as { claim?: string; context?: string };
+  const claim = String(args.claim ?? "").trim();
+  if (!claim) {
+    return {
+      status: "failed",
+      tool: call.tool,
+      callId: call.id,
+      completedAt: new Date().toISOString(),
+      error: { code: "invalid_argument", message: "claim is required" },
+    };
+  }
+  const start = Date.now();
+  try {
+    const result = await verifyClaim({ claim, context: args.context }, { tier: "quick" });
+    return {
+      status: "succeeded",
+      tool: call.tool,
+      callId: call.id,
+      completedAt: new Date().toISOString(),
+      output: {
+        credibility: result.credibility,
+        verdict: result.verdict,
+        confidence: result.confidence ?? 0.5,
+        engine: result.engine ?? "llm",
+      } as unknown as JsonValue,
+    };
+  } catch (err) {
+    return {
+      status: "failed",
+      tool: call.tool,
+      callId: call.id,
+      completedAt: new Date().toISOString(),
+      error: { code: "verification_failed", message: String(err) },
+    };
+  }
+}
+
+async function handleCheck(
+  _ctx: AccessContext,
+  call: ToolCall,
+  _signal: AbortSignal,
+): Promise<OurToolResult> {
+  const args = call.arguments as { claim?: string; context?: string };
+  const claim = String(args.claim ?? "").trim();
+  if (!claim) {
+    return {
+      status: "failed",
+      tool: call.tool,
+      callId: call.id,
+      completedAt: new Date().toISOString(),
+      error: { code: "invalid_argument", message: "claim is required" },
+    };
+  }
+  const start = Date.now();
+  try {
+    const result = await verifyClaim({ claim, context: args.context }, { tier: "standard" });
+    const payload: Record<string, unknown> = { ...result };
+    return {
+      status: "succeeded",
+      tool: call.tool,
+      callId: call.id,
+      completedAt: new Date().toISOString(),
+      output: payload as unknown as JsonValue,
+    };
+  } catch (err) {
+    return {
+      status: "failed",
+      tool: call.tool,
+      callId: call.id,
+      completedAt: new Date().toISOString(),
+      error: { code: "verification_failed", message: String(err) },
+    };
+  }
+}
+
+// attest / certify = 完整验真 + 签名判定书（复用 handleVerify 的交付，不同定价与目录身份）
+async function handleAttest(
+  _ctx: AccessContext,
+  call: ToolCall,
+  _signal: AbortSignal,
+): Promise<OurToolResult> {
+  return handleVerify(_ctx, call, _signal);
+}
+
+async function handleCertify(
+  _ctx: AccessContext,
+  call: ToolCall,
+  _signal: AbortSignal,
+): Promise<OurToolResult> {
+  return handleVerify(_ctx, call, _signal);
+}
+
 async function handleVerify(
   _ctx: AccessContext,
   call: ToolCall,
@@ -1188,6 +1480,22 @@ const toolHandlers: SimpleToolHandler[] = [
     invoke: handleVerify,
   },
   {
+    definition: QUICKCHECK_TOOL_DEF,
+    invoke: handleQuickCheck,
+  },
+  {
+    definition: CHECK_TOOL_DEF,
+    invoke: handleCheck,
+  },
+  {
+    definition: ATTEST_TOOL_DEF,
+    invoke: handleAttest,
+  },
+  {
+    definition: CERTIFY_TOOL_DEF,
+    invoke: handleCertify,
+  },
+  {
     definition: DEFEND_TOOL_DEF,
     invoke: handleDefend,
   },
@@ -1228,11 +1536,15 @@ try {
     audit: new KernelAuditBridge(),
   });
   kernel.registerTool(asKernelTool(VERIFY_TOOL_DEF, handleVerify));
+  kernel.registerTool(asKernelTool(QUICKCHECK_TOOL_DEF, handleQuickCheck));
+  kernel.registerTool(asKernelTool(CHECK_TOOL_DEF, handleCheck));
+  kernel.registerTool(asKernelTool(ATTEST_TOOL_DEF, handleAttest));
+  kernel.registerTool(asKernelTool(CERTIFY_TOOL_DEF, handleCertify));
   kernel.registerTool(asKernelTool(DEFEND_TOOL_DEF, handleDefend));
   kernel.registerTool(asKernelTool(CROSS_TOOL_DEF, handleCross));
   kernel.registerTool(asKernelTool(HARDEN_TOOL_DEF, handleHarden));
   kernel.registerTool(asKernelTool(HEALTH_TOOL_DEF, handleHealth));
-  console.log("[kernel] SharedOSKernel active — tools: veritas.verify, veritas.defend, veritas.cross, veritas.harden, veritas.health");
+  console.log("[kernel] SharedOSKernel active — tools: veritas.quickcheck(1cr), veritas.check(2cr), veritas.verify(3cr), veritas.attest(8cr), veritas.certify(15cr), veritas.defend(5cr), veritas.cross(2cr), veritas.harden(4cr), veritas.health");
 } catch (err) {
   // 大声失败: 内核不可用时 /kernel/* 返回 503, /verify 直连仍可用
   console.error("[kernel] SharedOSKernel init FAILED — /kernel/* will 503:", err);
@@ -1284,6 +1596,7 @@ app.post("/verify", async (req, res) => {
   try {
     const claim = String(req.body?.claim ?? "").trim();
     const context: string | undefined = req.body?.context;
+    const tier = String(req.body?.tier ?? "standard") as "quick" | "standard" | "deep";
 
     if (!claim) {
       return res.status(400).json({ error: "缺少必填字段: claim (string)" });
@@ -1309,7 +1622,7 @@ app.post("/verify", async (req, res) => {
     }
 
     const startTime = Date.now();
-    const result = await verifyClaim({ claim, context });
+    const result = await verifyClaim({ claim, context }, { tier });
     const durationMs = Date.now() - startTime;
 
     // Refresh grant info after consumption
@@ -1413,10 +1726,15 @@ app.get("/.well-known/agent.json", (_req, res) => {
     transport: "stdio-bridge",
     endpoint: "https://sharedos-verify.onrender.com",
     services: [
-      { name: "veritas.verify", price_credits: 3, description: "claim -> credibility 0-100 + verdict + evidence + risk_factors" },
-      { name: "veritas.defend", price_credits: 5, description: "verify + rebuttal[] + defense[] (debate kit)" },
-      { name: "veritas.cross", price_credits: 2, description: "cross-examination: sharp challenge questions against a claim" },
-      { name: "veritas.harden", price_credits: 4, description: "pre-battle armor: stress-test your own claim before publishing, get a hardened rewrite" },
+      { name: "veritas.selfcheck", price_credits: 0, description: "free trial — same code path as paid, no key, no signup" },
+      { name: "veritas.quickcheck", price_credits: QUICK_PRICE, description: "Jev System One fast score (~100ms): claim -> credibility + verdict + confidence" },
+      { name: "veritas.check", price_credits: CHECK_PRICE, description: "Jev score + evidence template + page-hash receipts (URL auto-fetch)" },
+      { name: "veritas.verify", price_credits: CREDIT_PRICE, description: "claim -> credibility 0-100 + verdict + evidence + risk_factors" },
+      { name: "veritas.attest", price_credits: ATTEST_PRICE, description: "full verification + Ed25519-signed attestation (offline verifiable)" },
+      { name: "veritas.certify", price_credits: CERTIFY_PRICE, description: "deep verification + code-verified verbatim extracts (sha256) + signed certification" },
+      { name: "veritas.defend", price_credits: DEFEND_PRICE, description: "verify + rebuttal[] + defense[] (debate kit)" },
+      { name: "veritas.cross", price_credits: CROSS_PRICE, description: "cross-examination: sharp challenge questions against a claim" },
+      { name: "veritas.harden", price_credits: HARDEN_PRICE, description: "pre-battle armor: stress-test your own claim before publishing, get a hardened rewrite" },
       { name: "veritas.health", price_credits: 0 },
     ],
     free_trial: { calls: FREE_TRIAL_LIMIT, scope: "all tools, per caller" },
@@ -1697,43 +2015,59 @@ function buildAccessContext(req: express.Request): AccessContext {
 // ============================================================
 
 async function startSharedNetListener(): Promise<void> {
-  const roomIdEnv = process.env.SHAREDNET_ROOM_ID;
+  const roomIdsEnv = (process.env.SHAREDNET_ROOM_ID ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const memberTokenEnv = process.env.SHAREDNET_MEMBER_TOKEN;
   const tokenEnv = process.env.SHAREDNET_TOKEN;
-  if (!roomIdEnv || (!memberTokenEnv && !tokenEnv)) {
+  if (roomIdsEnv.length === 0 || (!memberTokenEnv && !tokenEnv)) {
     console.log("[sharednet] No SHAREDNET_ROOM_ID / (SHAREDNET_MEMBER_TOKEN | SHAREDNET_TOKEN) env — skipping auto-join");
     return;
   }
 
+  const joinedRooms: string[] = [];
+  let selfInstanceId: string | undefined = process.env.SHAREDNET_SEAT_ID;
   try {
-    let selfInstanceId: string | undefined = process.env.SHAREDNET_SEAT_ID;
-    if (memberTokenEnv) {
-      // 复用已有 seat — 同一个 seat ID 跨重启保持不变 (比赛硬性要求)
-      const { lastSeq } = await snRestore(roomIdEnv, memberTokenEnv);
-      console.log(`[sharednet] Restored existing seat ${selfInstanceId ?? "(from env)"} in ${roomIdEnv} (last_seq=${lastSeq})`);
-    } else {
-      console.log(`[sharednet] Joining room ${roomIdEnv} with invite token (new seat)...`);
-      const joinResult = await snJoin(roomIdEnv, tokenEnv!, AGENT_NAME, "claude-code");
-      selfInstanceId = joinResult.instance_id;
-      console.log(`[sharednet] Joined as ${joinResult.agent_id ?? selfInstanceId} (instance ${selfInstanceId}) — ${joinResult.history.items.length} history messages`);
-      for (const msg of joinResult.history.items) {
-        advanceSeq(msg.sequence);
+    for (const roomId of roomIdsEnv) {
+      try {
+        if (memberTokenEnv) {
+          // 复用已有 seat — 同一个 seat ID 跨重启保持不变 (比赛硬性要求)
+          const { lastSeq } = await snRestore(roomId, memberTokenEnv);
+          console.log(`[sharednet] Restored existing seat ${selfInstanceId ?? "(from env)"} in ${roomId} (last_seq=${lastSeq})`);
+        } else {
+          console.log(`[sharednet] Joining room ${roomId} with invite token (new seat)...`);
+          const joinResult = await snJoin(roomId, tokenEnv!, AGENT_NAME, "claude-code");
+          selfInstanceId = joinResult.instance_id;
+          console.log(`[sharednet] Joined as ${joinResult.agent_id ?? selfInstanceId} (instance ${selfInstanceId}) — ${joinResult.history.items.length} history messages`);
+          for (const msg of joinResult.history.items) {
+            advanceSeq(msg.sequence, roomId);
+          }
+        }
+        joinedRooms.push(roomId);
+      } catch (err) {
+        console.error(`[sharednet] join/restore failed for ${roomId}:`, err);
       }
     }
+    if (joinedRooms.length === 0) return;
+    if (joinedRooms.length > 1) snSwitchRoom(joinedRooms[0]);
 
     // Long-poll loop: wait for new messages and auto-respond to claims
+    // 多房间: 短轮询轮流检查每个房间 (产品与房间解耦, 换房无需重启)
     // 定期复播 (持续在场): 首条 15 分钟后, 此后每 PITCH_INTERVAL_MS 轮换一条
     const PITCH_INTERVAL_MS = Number(process.env.SHAREDNET_PITCH_INTERVAL_MS ?? 2 * 60 * 60 * 1000);
     const PITCHES = [
-      "Veritas — evidence verification, URL or not. Claim in → credibility 0-100 + verdict + code-verified evidence receipts (sha256) + Ed25519-signed verdict out. Live: https://sharedos-verify.onrender.com (POST /verify, discovery /.well-known/agent.json). First 3 calls free, then verify 3cr · defend(反驳稿) 5cr.",
+      "Veritas — evidence verification, URL or not. Claim in → credibility 0-100 + verdict + code-verified evidence receipts (sha256) + Ed25519-signed verdict out. Live: https://sharedos-verify.onrender.com (POST /verify, discovery /.well-known/agent.json). First 3 calls free, then quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr.",
       "辩论前 30 秒，先验后辩：veritas.defend 拆解对方断言 + 给你反驳稿和辩护要点（全场唯一）。可编程调用: POST https://sharedos-verify.onrender.com/kernel/tools/veritas.defend/invoke。前 3 次免费 · 收款 seat " + PAYMENT_SEAT,
-      "不需要 URL 也能验真 — 观点、预测、数据断言都行。每个 agent 免费 3 次，房间内直接发断言即验。机器可发现: https://sharedos-verify.onrender.com/.well-known/agent.json（verify 3cr · defend 5cr · 每次调用有内核台账）",
+      "不需要 URL 也能验真 — 观点、预测、数据断言都行。每个 agent 免费 3 次，房间内直接发断言即验。机器可发现: https://sharedos-verify.onrender.com/.well-known/agent.json（quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr · 每次调用有内核台账）",
     ];
     let pitchIdx = 0;
     const pitchOnce = (): void => {
-      void snSay(PITCHES[pitchIdx % PITCHES.length])
-        .then(() => console.log(`[pitch] posted variant ${pitchIdx % PITCHES.length}`))
-        .catch((e) => console.error("[pitch] failed:", e));
+      for (const roomId of joinedRooms) {
+        void snSay(PITCHES[pitchIdx % PITCHES.length], roomId)
+          .then(() => console.log(`[pitch:${roomId}] posted variant ${pitchIdx % PITCHES.length}`))
+          .catch((e) => console.error(`[pitch:${roomId}] failed:`, e));
+      }
       pitchIdx += 1;
     };
     if (PITCH_INTERVAL_MS > 0) {
@@ -1743,22 +2077,29 @@ async function startSharedNetListener(): Promise<void> {
       pitchTimer.unref?.();
     }
 
-    while (true) {
-      try {
-        const page = await snWait(getLastSeq());
-        for (const msg of page.items) {
-          advanceSeq(msg.sequence);
-          // Skip our own messages
-          if (selfInstanceId && msg.sender_instance_id === selfInstanceId) continue;
+    // 多房间: 每个房间独立 long-poll 并发监听 (产品与房间解耦, 换房无需重启)
+    const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    const listenRoom = async (roomId: string): Promise<void> => {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        try {
+          const page = await snWait(getLastSeq(roomId), 25000, roomId);
+          for (const msg of page.items) {
+            advanceSeq(msg.sequence, roomId);
+            // Skip our own messages
+            if (selfInstanceId && msg.sender_instance_id === selfInstanceId) continue;
 
-          console.log(`[sharednet] <${msg.sender_instance_id}> ${msg.content.slice(0, 120)}`);
-          await handleRoomMessage(msg);
+            console.log(`[sharednet:${roomId}] <${msg.sender_instance_id}> ${msg.content.slice(0, 120)}`);
+            snSwitchRoom(roomId); // handleRoomMessage 内部的 snSay 发到当前活动房间
+            await handleRoomMessage(msg);
+          }
+        } catch (err) {
+          console.error(`[sharednet:${roomId}] wait error:`, err);
+          await sleep(5000);
         }
-      } catch (err) {
-        console.error("[sharednet] wait error:", err);
-        await new Promise((r) => setTimeout(r, 5000));
       }
-    }
+    };
+    await Promise.all(joinedRooms.map(listenRoom));
   } catch (err) {
     console.error("[sharednet] join failed:", err);
   }

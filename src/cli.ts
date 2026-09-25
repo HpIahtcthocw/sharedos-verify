@@ -1,28 +1,33 @@
 #!/usr/bin/env node
 /**
- * veritas-cli — 本地命令行调用 verify
+ * veritas-cli — 本地命令行调用 verify + 快速进房
  *
  * 使用:
- *   npx veritas verify "火星上有液态水"
- *   npx veritas verify "AI将取代所有程序员" --context "根据2025年统计..."
- *   npx veritas health
+ *   veritas verify "火星上有液态水"
+ *   veritas verify "AI将取代所有程序员" --context "根据2025年统计..."
+ *   veritas health
+ *   veritas join <roomId|inviteUrl> [--token <token>] [--name <name>]   # 10秒进房, 持续在场
  *
- * 依赖: 本服务必须已在本机跑在 VERITAS_URL (默认 http://localhost:4000)
+ * 依赖: verify/health 需要本服务跑在 VERITAS_URL (默认 http://localhost:4000)
+ *       join 直接走 SharedNet API, 不依赖本地服务 — 一条命令进任意房间。
  */
 
-import { spawn } from "node:child_process";
+import { join as snJoin, wait as snWait, say as snSay, advanceSeq, getLastSeq } from "./sharednet.js";
 
 const VERITAS_URL = process.env.VERITAS_URL || "http://localhost:4000";
 
-async function postVerify(claim: string, context?: string): Promise<void> {
+const MENU =
+  "Veritas — evidence verification, URL or not. Claim in -> credibility 0-100 + verdict + code-verified receipts (sha256) + Ed25519-signed verdict. Live: https://sharedos-verify.onrender.com (.well-known/agent.json, POST /verify). Pricing: quickcheck 1cr (Jev ~100ms) · check 2cr · verify 3cr · attest 8cr · certify 15cr · defend 5cr (rebuttal kit) · cross 2cr · harden 4cr. First 3 calls free. Pay seat: sharednet seat in this room.";
+
+async function postVerify(claim: string, context?: string, tier = "standard"): Promise<void> {
   const resp = await fetch(`${VERITAS_URL}/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ claim, context }),
+    body: JSON.stringify({ claim, context, tier }),
   });
   const data = (await resp.json()) as Record<string, unknown>;
   if (!resp.ok) {
-    console.error(`❌ Error (${resp.status}): ${data.error ?? resp.statusText}`);
+    console.error(`Error (${resp.status}): ${data.error ?? resp.statusText}`);
     process.exit(1);
   }
   console.log(JSON.stringify(data, null, 2));
@@ -34,6 +39,101 @@ async function getHealth(): Promise<void> {
   console.log(JSON.stringify(data, null, 2));
 }
 
+async function maybeReply(roomId: string, content: string): Promise<void> {
+  const line = content.trim();
+  const lower = line.toLowerCase();
+
+  // 菜单/价格问询 → 发菜单
+  if (/(what services|how (do i|to) (call|use)|your (price|pricing|service)|什么服务|怎么用|怎么调用|价格|多少钱)/.test(lower)) {
+    await snSay(MENU, roomId);
+    return;
+  }
+
+  // 断言前缀触发验真: "verify: <claim>" / "!verify <claim>" / "veritas.verify <claim>"
+  const vm = line.match(/^(?:verify|!verify|veritas\.verify|check)\s*[::：]?\s*(.+)$/i);
+  if (vm && vm[1]) {
+    const claim = vm[1].replace(/^["'`]+|["'`]+$/g, "").trim();
+    if (claim.length < 4) return;
+    try {
+      const resp = await fetch(`${VERITAS_URL}/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claim, tier: "quick" }),
+      });
+      const data = (await resp.json()) as Record<string, unknown>;
+      const line2 = `Veritas: credibility ${data.credibility}/100 · verdict ${data.verdict} · engine ${data.engine ?? "llm"}${data.receipts ? ` · ${(data.receipts as unknown[]).length} receipts` : ""} (upgrade: attest 8cr signed)`;
+      await snSay(line2, roomId);
+      console.log(`[cli:${roomId}] replied: ${line2}`);
+    } catch (err) {
+      const msg = `Veritas: verify temporarily unavailable (${String(err).slice(0, 80)}), retry later`;
+      await snSay(msg, roomId).catch(() => undefined);
+      console.error(`[cli:${roomId}] verify failed:`, err);
+    }
+    return;
+  }
+}
+
+async function cmdJoin(args: string[]): Promise<void> {
+  const roomInput = args[0];
+  const tokenIdx = args.indexOf("--token");
+  let token = tokenIdx >= 0 ? args[tokenIdx + 1] : undefined;
+  const nameIdx = args.indexOf("--name");
+  const name = nameIdx >= 0 ? args[nameIdx + 1] : "veritas";
+
+  if (!roomInput) {
+    console.error("Usage: veritas join <roomId|inviteUrl> [--token <token>] [--name <name>]");
+    process.exit(1);
+  }
+
+  // invite URL (https://www.sharednet.ai/join/rit_xxx) → 提取 token; 房间 ID 需 --room 或 env
+  let roomId = roomInput;
+  if (roomInput.includes("/join/")) {
+    const m = roomInput.match(/join\/([A-Za-z0-9_-]+)/);
+    if (!m) {
+      console.error("Cannot extract token from invite URL");
+      process.exit(1);
+    }
+    token = token ?? m[1];
+    const roomIdx = args.indexOf("--room");
+    roomId = roomIdx >= 0 ? args[roomIdx + 1] : (process.env.SHAREDNET_ROOM_ID ?? "");
+    if (!roomId) {
+      console.error("Invite URL has no room ID — pass --room <rom_xxx> (Arena rooms are rom_xxx; invite tokens are rit_xxx)");
+      process.exit(1);
+    }
+  }
+
+  if (!token) {
+    token = process.env.SHAREDNET_TOKEN || process.env.SHAREDNET_MEMBER_TOKEN || undefined;
+  }
+  if (!token) {
+    console.error("No token — pass --token <token> or set SHAREDNET_TOKEN / SHAREDNET_MEMBER_TOKEN");
+    process.exit(1);
+  }
+
+  console.log(`[cli] joining ${roomId} as "${name}"...`);
+  const joined = await snJoin(roomId, token, name, "cli");
+  for (const msg of joined.history.items) advanceSeq(msg.sequence, roomId);
+  console.log(`[cli] joined ${roomId} as ${joined.agent_id ?? joined.instance_id} (history ${joined.history.items.length})`);
+  console.log(`[cli] listening... Ctrl+C to stop`);
+  console.log(`[cli] reply rules: "verify: <claim>" -> quick check; menu/pricing question -> menu`);
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      const page = await snWait(getLastSeq(roomId), 15000, roomId);
+      for (const msg of page.items) {
+        advanceSeq(msg.sequence, roomId);
+        if (msg.sender_instance_id === joined.instance_id) continue;
+        console.log(`\n[${roomId}] <${msg.sender_agent_id ?? msg.sender_instance_id}> ${msg.content}`);
+        await maybeReply(roomId, msg.content);
+      }
+    } catch (err) {
+      console.error(`[cli:${roomId}] wait error:`, err);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -42,27 +142,41 @@ async function main(): Promise<void> {
     case "verify": {
       const claim = args[1];
       if (!claim) {
-        console.error("Usage: veritas verify <claim> [--context <context>]");
+        console.error("Usage: veritas verify <claim> [--context <context>] [--tier quick|standard|deep]");
         process.exit(1);
       }
       const ctxIdx = args.indexOf("--context");
       const context = ctxIdx >= 0 ? args[ctxIdx + 1] : undefined;
-      await postVerify(claim, context);
+      const tierIdx = args.indexOf("--tier");
+      const tier = tierIdx >= 0 ? args[tierIdx + 1] : "standard";
+      await postVerify(claim, context, tier);
       break;
     }
     case "health":
       await getHealth();
+      break;
+    case "join":
+      await cmdJoin(args.slice(1));
       break;
     default:
       console.log(`
 Veritas CLI — evidence verification agent
 
 Commands:
-  veritas verify <claim> [--context <context>]   Verify a claim
-  veritas health                                  Show service health
+  veritas verify <claim> [--context <context>] [--tier quick|standard|deep]   Verify a claim
+  veritas join <roomId|inviteUrl> [--token <token>] [--name <name>]          Join a room in ~10s and stay present (auto-replies to menu/verify prompts)
+  veritas health                                                              Show service health
+
+Examples:
+  veritas verify "the moon landing was real"
+  veritas join rom_aNufp2Jck4 --token <member_token>
+  veritas join "https://www.sharednet.ai/join/rit_xxx" --room rom_xxx --token <invite_or_member_token>
 
 Environment:
-  VERITAS_URL   Base URL of the service (default: http://localhost:4000)
+  VERITAS_URL            Base URL of the verify service (default: http://localhost:4000)
+  SHAREDNET_ROOM_ID      Room ID fallback for invite-URL join
+  SHAREDNET_TOKEN        Invite token fallback
+  SHAREDNET_MEMBER_TOKEN Member token fallback (restores existing seat)
 `);
       break;
   }

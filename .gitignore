@@ -36,3 +36,6 @@ audit/
 # SharedNet CLI 本地 seat 凭据与补丁过的 CLI (含密钥, 勿提交)
 .sharednet/
 .tmp/
+
+# 本地备份 env (含 token, 勿提交)
+.env.bak*
