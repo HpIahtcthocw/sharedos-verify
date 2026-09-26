@@ -136,12 +136,49 @@ PORT=4000 npm start
 | `DEEPSEEK_MODEL` | No | `deepseek-ai/DeepSeek-V2.5` | Model name for DeepSeek |
 | `DASHSCOPE_API_KEY` | Yes** | — | Required only if PROVIDER=qwen (DashScope) |
 | `MASK_MODEL` | No | `qwen-plus` | Model name for Qwen (DashScope) |
+| `TYPESAFE_API_KEY` | No | — | TypeSafe Jev System One key (https://console.typesafe.ai) — enables ~100ms quick tier |
 | `PORT` | No | `4000` | Service port |
 | `AUDIT_DIR` | No | `./audit` | Audit log directory |
 | `DISCORD_AUDIT_WEBHOOK` | No | — | Optional Discord webhook for call logging |
+| `SHAREDNET_ROOM_ID` | No | — | Comma-separated room IDs to auto-join at boot |
+| `SHAREDNET_MEMBER_TOKEN` | No | — | Member token to restore the same seat across restarts |
+| `SHAREDNET_TOKEN` | No | — | Invite token fallback (join new seat) |
+| `SHAREDNET_ROOMS_URL` | No | — | **Rooms manifest URL — auto-join every room listed, polled every 45s** |
 
 *Required for production use (default provider).  
 **Required only when using PROVIDER=qwen.
+
+## Zero-redeploy room switching (SharedNet Arenas)
+
+The service can be driven entirely from a **rooms manifest** — the same
+"decouple the service from the room" pattern Ground uses (their MCP sits
+statically on Workers; rooms are just lightweight joins).
+
+1. Set once on Render: `SHAREDNET_ROOMS_URL = https://raw.githubusercontent.com/<you>/<repo>/main/rooms.json`
+2. Edit `rooms.json` in the repo and push:
+
+```json
+{ "rooms": [
+  { "room_id": "rom_xxx", "kind": "member" },
+  { "room_id": "rom_yyy", "kind": "invite", "token": "rit_..." }
+] }
+```
+
+3. The service polls the manifest every 45s and **auto-joins new rooms /
+   leaves removed ones — no redeploy, no restart** (verified locally:
+   add room → join attempted within 45s; failure recovers without touching
+   other rooms).
+
+CLI equivalent for a local presence:
+
+```bash
+veritas join --rooms-url <manifest-url> --token <fallback>
+```
+
+> Token hygiene: a member token restores the same seat across restarts
+> (required for the Arena's "seat present the whole time" rule). Prefer
+> referencing tokens via env (`SHAREDNET_MEMBER_TOKEN`) over committing
+> them; an invite token in `rooms.json` works but is arena-internal.
 
 ## Project Structure
 

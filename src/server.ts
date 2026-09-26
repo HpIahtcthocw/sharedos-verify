@@ -48,7 +48,7 @@ import {
 import { AGENT_ID, AGENT_NAME, AGENT_OWNER, makeVerifyGrant, makePaidVerifyGrant, makeDirectoryGrant, FREE_TRIAL_LIMIT, CREDIT_PRICE, DEFEND_PRICE, CROSS_PRICE, HARDEN_PRICE, QUICK_PRICE, CHECK_PRICE, ATTEST_PRICE, CERTIFY_PRICE } from "./agent.js";
 import { jevEnabled, jevCredibility, type CredibilityVerdict } from "./decision.js";
 import { createAuditRecord, writeAudit, writeKernelEvent, type AuditRecord } from "./audit.js";
-import { join as snJoin, restore as snRestore, say as snSay, wait as snWait, read as snRead, getLastSeq, advanceSeq, getRoomId, getMemberToken, switchRoom as snSwitchRoom, listRooms as snListRooms } from "./sharednet.js";
+import { join as snJoin, restore as snRestore, say as snSay, wait as snWait, read as snRead, getLastSeq, advanceSeq, getRoomId, getMemberToken, switchRoom as snSwitchRoom, listRooms as snListRooms, leave as snLeave, getSelfInstanceId } from "./sharednet.js";
 
 // Our local ToolResult union — 字段与 SDK ToolResult schema 对齐 (output 为 JSON 值)
 type OurToolResult =
@@ -2014,6 +2014,23 @@ function buildAccessContext(req: express.Request): AccessContext {
 // SharedNet background listener (auto-join + auto-respond)
 // ============================================================
 
+interface RoomManifestEntry {
+  room_id: string;
+  /** member token (restore 复用 seat) 或 invite token (join 新 seat) */
+  token?: string;
+  /** member=restore 已有 seat; invite=创建新 seat (默认) */
+  kind?: "member" | "invite";
+}
+
+/**
+ * SharedNet 后台监听器 — 清单驱动 + env 驱动 (与 Ground 的"服务与房间解耦"同构)
+ *
+ * 房间来源:
+ *   1. env  SHAREDNET_ROOM_ID (逗号分隔) + SHAREDNET_MEMBER_TOKEN / SHAREDNET_TOKEN
+ *   2. manifest  SHAREDNET_ROOMS_URL → 每 45s 拉取 rooms.json, diff 后自动 join/leave
+ *
+ * 换房闭环: 改仓库 rooms.json → push → 服务 45s 内自动进房, 零重部署零人工。
+ */
 async function startSharedNetListener(): Promise<void> {
   const roomIdsEnv = (process.env.SHAREDNET_ROOM_ID ?? "")
     .split(",")
@@ -2021,55 +2038,132 @@ async function startSharedNetListener(): Promise<void> {
     .filter(Boolean);
   const memberTokenEnv = process.env.SHAREDNET_MEMBER_TOKEN;
   const tokenEnv = process.env.SHAREDNET_TOKEN;
-  if (roomIdsEnv.length === 0 || (!memberTokenEnv && !tokenEnv)) {
-    console.log("[sharednet] No SHAREDNET_ROOM_ID / (SHAREDNET_MEMBER_TOKEN | SHAREDNET_TOKEN) env — skipping auto-join");
+  const manifestUrl = process.env.SHAREDNET_ROOMS_URL;
+  if (roomIdsEnv.length === 0 && !manifestUrl) {
+    console.log("[sharednet] No SHAREDNET_ROOM_ID / SHAREDNET_ROOMS_URL — skipping auto-join");
     return;
   }
 
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const managed = new Map<string, { token?: string; kind: "member" | "invite" }>();
+  const loops = new Map<string, AbortController>();
   const joinedRooms: string[] = [];
-  let selfInstanceId: string | undefined = process.env.SHAREDNET_SEAT_ID;
-  try {
-    for (const roomId of roomIdsEnv) {
+
+  const PITCH_INTERVAL_MS = Number(process.env.SHAREDNET_PITCH_INTERVAL_MS ?? 2 * 60 * 60 * 1000);
+  const PITCHES = [
+    "Veritas — evidence verification, URL or not. Claim in → credibility 0-100 + verdict + code-verified evidence receipts (sha256) + Ed25519-signed verdict out. Live: https://sharedos-verify.onrender.com (POST /verify, discovery /.well-known/agent.json). First 3 calls free, then quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr.",
+    "辩论前 30 秒，先验后辩：veritas.defend 拆解对方断言 + 给你反驳稿和辩护要点（全场唯一）。可编程调用: POST https://sharedos-verify.onrender.com/kernel/tools/veritas.defend/invoke。前 3 次免费 · 收款 seat " + PAYMENT_SEAT,
+    "不需要 URL 也能验真 — 观点、预测、数据断言都行。每个 agent 免费 3 次，房间内直接发断言即验。机器可发现: https://sharedos-verify.onrender.com/.well-known/agent.json（quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr · 每次调用有内核台账）",
+  ];
+  let pitchIdx = 0;
+  const pitchOnce = (): void => {
+    for (const roomId of joinedRooms) {
+      void snSay(PITCHES[pitchIdx % PITCHES.length], roomId)
+        .then(() => console.log(`[pitch:${roomId}] posted variant ${pitchIdx % PITCHES.length}`))
+        .catch((e) => console.error(`[pitch:${roomId}] failed:`, e));
+    }
+    pitchIdx += 1;
+  };
+
+  // 每房间独立 long-poll; signal.aborted 时退出 (dropRoom 用)
+  const listenRoom = async (roomId: string, signal: AbortSignal): Promise<void> => {
+    const me = getSelfInstanceId(roomId);
+    while (!signal.aborted) {
       try {
-        if (memberTokenEnv) {
-          // 复用已有 seat — 同一个 seat ID 跨重启保持不变 (比赛硬性要求)
-          const { lastSeq } = await snRestore(roomId, memberTokenEnv);
-          console.log(`[sharednet] Restored existing seat ${selfInstanceId ?? "(from env)"} in ${roomId} (last_seq=${lastSeq})`);
-        } else {
-          console.log(`[sharednet] Joining room ${roomId} with invite token (new seat)...`);
-          const joinResult = await snJoin(roomId, tokenEnv!, AGENT_NAME, "claude-code");
-          selfInstanceId = joinResult.instance_id;
-          console.log(`[sharednet] Joined as ${joinResult.agent_id ?? selfInstanceId} (instance ${selfInstanceId}) — ${joinResult.history.items.length} history messages`);
-          for (const msg of joinResult.history.items) {
-            advanceSeq(msg.sequence, roomId);
-          }
+        const page = await snWait(getLastSeq(roomId), 25000, roomId);
+        for (const msg of page.items) {
+          if (signal.aborted) return;
+          advanceSeq(msg.sequence, roomId);
+          if (me && msg.sender_instance_id === me) continue;
+          console.log(`[sharednet:${roomId}] <${msg.sender_instance_id}> ${msg.content.slice(0, 120)}`);
+          snSwitchRoom(roomId); // handleRoomMessage 内部的 snSay 发到当前活动房间
+          await handleRoomMessage(msg);
         }
-        joinedRooms.push(roomId);
       } catch (err) {
-        console.error(`[sharednet] join/restore failed for ${roomId}:`, err);
+        if (signal.aborted) return;
+        console.error(`[sharednet:${roomId}] wait error:`, err);
+        await sleep(5000);
       }
     }
-    if (joinedRooms.length === 0) return;
-    if (joinedRooms.length > 1) snSwitchRoom(joinedRooms[0]);
+  };
 
-    // Long-poll loop: wait for new messages and auto-respond to claims
-    // 多房间: 短轮询轮流检查每个房间 (产品与房间解耦, 换房无需重启)
-    // 定期复播 (持续在场): 首条 15 分钟后, 此后每 PITCH_INTERVAL_MS 轮换一条
-    const PITCH_INTERVAL_MS = Number(process.env.SHAREDNET_PITCH_INTERVAL_MS ?? 2 * 60 * 60 * 1000);
-    const PITCHES = [
-      "Veritas — evidence verification, URL or not. Claim in → credibility 0-100 + verdict + code-verified evidence receipts (sha256) + Ed25519-signed verdict out. Live: https://sharedos-verify.onrender.com (POST /verify, discovery /.well-known/agent.json). First 3 calls free, then quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr.",
-      "辩论前 30 秒，先验后辩：veritas.defend 拆解对方断言 + 给你反驳稿和辩护要点（全场唯一）。可编程调用: POST https://sharedos-verify.onrender.com/kernel/tools/veritas.defend/invoke。前 3 次免费 · 收款 seat " + PAYMENT_SEAT,
-      "不需要 URL 也能验真 — 观点、预测、数据断言都行。每个 agent 免费 3 次，房间内直接发断言即验。机器可发现: https://sharedos-verify.onrender.com/.well-known/agent.json（quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr · 每次调用有内核台账）",
-    ];
-    let pitchIdx = 0;
-    const pitchOnce = (): void => {
-      for (const roomId of joinedRooms) {
-        void snSay(PITCHES[pitchIdx % PITCHES.length], roomId)
-          .then(() => console.log(`[pitch:${roomId}] posted variant ${pitchIdx % PITCHES.length}`))
-          .catch((e) => console.error(`[pitch:${roomId}] failed:`, e));
+  const ensureRoom = async (roomId: string, token?: string, kind: "member" | "invite" = "invite"): Promise<void> => {
+    if (managed.has(roomId)) return;
+    managed.set(roomId, { token, kind });
+    try {
+      const useMember = kind === "member" ? (token ?? memberTokenEnv) : undefined;
+      const useInvite = kind === "invite" ? (token ?? tokenEnv) : undefined;
+      if (useMember) {
+        const { lastSeq } = await snRestore(roomId, useMember);
+        console.log(`[sharednet] Restored existing seat in ${roomId} (last_seq=${lastSeq})`);
+      } else if (useInvite) {
+        const joinResult = await snJoin(roomId, useInvite, AGENT_NAME, "claude-code");
+        console.log(`[sharednet] Joined ${roomId} as ${joinResult.agent_id ?? joinResult.instance_id} — ${joinResult.history.items.length} history messages`);
+        for (const msg of joinResult.history.items) advanceSeq(msg.sequence, roomId);
+      } else {
+        console.error(`[sharednet] No token available for ${roomId} (set SHAREDNET_MEMBER_TOKEN/SHAREDNET_TOKEN or room token)`);
+        managed.delete(roomId);
+        return;
       }
-      pitchIdx += 1;
-    };
+      joinedRooms.push(roomId);
+      const ctrl = new AbortController();
+      loops.set(roomId, ctrl);
+      void listenRoom(roomId, ctrl.signal);
+    } catch (err) {
+      console.error(`[sharednet] join/restore failed for ${roomId}:`, err);
+      managed.delete(roomId);
+    }
+  };
+
+  const dropRoom = async (roomId: string): Promise<void> => {
+    const ctrl = loops.get(roomId);
+    if (ctrl) {
+      ctrl.abort();
+      loops.delete(roomId);
+    }
+    try { snLeave(roomId); } catch { /* best effort */ }
+    managed.delete(roomId);
+    const i = joinedRooms.indexOf(roomId);
+    if (i >= 0) joinedRooms.splice(i, 1);
+    console.log(`[sharednet] left ${roomId}`);
+  };
+
+  // manifest 轮询: diff 后自动 join 新增 / leave 移除
+  const syncManifest = async (): Promise<void> => {
+    if (!manifestUrl) return;
+    try {
+      const resp = await fetch(manifestUrl, { signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) throw new Error(`manifest HTTP ${resp.status}`);
+      const data = (await resp.json()) as { rooms?: RoomManifestEntry[] };
+      const want = new Set<string>();
+      for (const entry of data.rooms ?? []) {
+        if (!entry?.room_id) continue;
+        want.add(entry.room_id);
+        await ensureRoom(entry.room_id, entry.token, entry.kind ?? "invite");
+      }
+      for (const roomId of [...managed.keys()]) {
+        if (!want.has(roomId)) await dropRoom(roomId);
+      }
+      console.log(`[roomsync] manifest synced: joined=${joinedRooms.join(",") || "(none)"}`);
+    } catch (err) {
+      console.error("[roomsync] manifest poll failed:", err);
+    }
+  };
+
+  try {
+    // env 房间 (启动即入)
+    for (const roomId of roomIdsEnv) {
+      await ensureRoom(roomId, undefined, memberTokenEnv ? "member" : "invite");
+    }
+
+    // manifest 房间 (45s 轮询, 换房零重部署)
+    if (manifestUrl) {
+      await syncManifest();
+      const pollTimer = setInterval(() => void syncManifest(), 45000);
+      pollTimer.unref?.();
+    }
+
+    if (joinedRooms.length > 1) snSwitchRoom(joinedRooms[0]);
     if (PITCH_INTERVAL_MS > 0) {
       const firstPitch = setTimeout(pitchOnce, 15 * 60 * 1000);
       firstPitch.unref?.();
@@ -2077,31 +2171,10 @@ async function startSharedNetListener(): Promise<void> {
       pitchTimer.unref?.();
     }
 
-    // 多房间: 每个房间独立 long-poll 并发监听 (产品与房间解耦, 换房无需重启)
-    const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-    const listenRoom = async (roomId: string): Promise<void> => {
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        try {
-          const page = await snWait(getLastSeq(roomId), 25000, roomId);
-          for (const msg of page.items) {
-            advanceSeq(msg.sequence, roomId);
-            // Skip our own messages
-            if (selfInstanceId && msg.sender_instance_id === selfInstanceId) continue;
-
-            console.log(`[sharednet:${roomId}] <${msg.sender_instance_id}> ${msg.content.slice(0, 120)}`);
-            snSwitchRoom(roomId); // handleRoomMessage 内部的 snSay 发到当前活动房间
-            await handleRoomMessage(msg);
-          }
-        } catch (err) {
-          console.error(`[sharednet:${roomId}] wait error:`, err);
-          await sleep(5000);
-        }
-      }
-    };
-    await Promise.all(joinedRooms.map(listenRoom));
+    // 保持监听循环存活 (loops 为 detached promises)
+    await new Promise(() => {});
   } catch (err) {
-    console.error("[sharednet] join failed:", err);
+    console.error("[sharednet] listener init failed:", err);
   }
 }
 

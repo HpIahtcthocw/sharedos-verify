@@ -73,7 +73,83 @@ async function maybeReply(roomId: string, content: string): Promise<void> {
   }
 }
 
+interface ManifestEntry {
+  room_id: string;
+  token?: string;
+  kind?: "member" | "invite";
+}
+
+// --rooms-url 守护模式: 拉取 rooms.json 清单, 自动加入所有房间并持续监听 (45s 轮询 diff)
+async function cmdJoinManifest(roomsUrl: string, args: string[]): Promise<void> {
+  const tokenIdx = args.indexOf("--token");
+  const fallbackToken =
+    (tokenIdx >= 0 ? args[tokenIdx + 1] : undefined) ||
+    process.env.SHAREDNET_TOKEN ||
+    process.env.SHAREDNET_MEMBER_TOKEN ||
+    undefined;
+
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const active = new Set<string>();
+
+  const listen = async (roomId: string, instanceId: string): Promise<void> => {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        const page = await snWait(getLastSeq(roomId), 15000, roomId);
+        for (const msg of page.items) {
+          advanceSeq(msg.sequence, roomId);
+          if (msg.sender_instance_id === instanceId) continue;
+          console.log(`\n[${roomId}] <${msg.sender_agent_id ?? msg.sender_instance_id}> ${msg.content}`);
+          await maybeReply(roomId, msg.content);
+        }
+      } catch (err) {
+        console.error(`[cli:${roomId}] wait error:`, err);
+        await sleep(3000);
+      }
+    }
+  };
+
+  const sync = async (): Promise<void> => {
+    try {
+      const resp = await fetch(roomsUrl, { signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) throw new Error(`manifest HTTP ${resp.status}`);
+      const data = (await resp.json()) as { rooms?: ManifestEntry[] };
+      for (const entry of data.rooms ?? []) {
+        if (!entry?.room_id || active.has(entry.room_id)) continue;
+        const token = entry.token ?? fallbackToken;
+        if (!token) {
+          console.error(`[cli] no token for ${entry.room_id} — pass --token or set SHAREDNET_TOKEN`);
+          continue;
+        }
+        try {
+          const joined = await snJoin(entry.room_id, token, "veritas", "cli");
+          for (const m of joined.history.items) advanceSeq(m.sequence, entry.room_id);
+          active.add(entry.room_id);
+          console.log(`[cli] joined ${entry.room_id} as ${joined.agent_id ?? joined.instance_id} — listening`);
+          void listen(entry.room_id, joined.instance_id);
+        } catch (err) {
+          console.error(`[cli] join failed for ${entry.room_id}:`, err);
+        }
+      }
+      console.log(`[cli] manifest synced: active=${[...active].join(",") || "(none)"}`);
+    } catch (err) {
+      console.error("[cli] manifest poll failed:", err);
+    }
+  };
+
+  console.log(`[cli] rooms-url mode: ${roomsUrl}`);
+  await sync();
+  const timer = setInterval(() => void sync(), 45000);
+  timer.unref?.();
+  await new Promise(() => {});
+}
+
 async function cmdJoin(args: string[]): Promise<void> {
+  const roomsUrlIdx = args.indexOf("--rooms-url");
+  if (roomsUrlIdx >= 0 && args[roomsUrlIdx + 1]) {
+    await cmdJoinManifest(args[roomsUrlIdx + 1], args);
+    return;
+  }
   const roomInput = args[0];
   const tokenIdx = args.indexOf("--token");
   let token = tokenIdx >= 0 ? args[tokenIdx + 1] : undefined;
@@ -165,6 +241,7 @@ Veritas CLI — evidence verification agent
 Commands:
   veritas verify <claim> [--context <context>] [--tier quick|standard|deep]   Verify a claim
   veritas join <roomId|inviteUrl> [--token <token>] [--name <name>]          Join a room in ~10s and stay present (auto-replies to menu/verify prompts)
+  veritas join --rooms-url <manifest.json> [--token <fallback>]                    Watch a rooms manifest and auto-join every room (45s diff)
   veritas health                                                              Show service health
 
 Examples:

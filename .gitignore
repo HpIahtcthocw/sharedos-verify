@@ -39,3 +39,9 @@ audit/
 
 # 本地备份 env (含 token, 勿提交)
 .env.bak*
+
+server.*.log
+
+# 本地临时 PID / 日志 (勿提交)
+.tmp-*.pid
+server.*.log
