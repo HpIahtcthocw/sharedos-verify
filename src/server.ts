@@ -46,7 +46,7 @@ import {
 
 // ---- Local modules ----
 import { AGENT_ID, AGENT_NAME, AGENT_OWNER, makeVerifyGrant, makePaidVerifyGrant, makeDirectoryGrant, FREE_TRIAL_LIMIT, CREDIT_PRICE, DEFEND_PRICE, CROSS_PRICE, HARDEN_PRICE, QUICK_PRICE, CHECK_PRICE, ATTEST_PRICE, CERTIFY_PRICE } from "./agent.js";
-import { jevEnabled, jevCredibility, type CredibilityVerdict } from "./decision.js";
+import { jevEnabled, jevCredibility, cloudflareEnabled, cloudflareQuickScore, type CredibilityVerdict } from "./decision.js";
 import { createAuditRecord, writeAudit, writeKernelEvent, type AuditRecord } from "./audit.js";
 import { join as snJoin, restore as snRestore, say as snSay, wait as snWait, read as snRead, getLastSeq, advanceSeq, getRoomId, getMemberToken, switchRoom as snSwitchRoom, listRooms as snListRooms, leave as snLeave, getSelfInstanceId } from "./sharednet.js";
 
@@ -537,6 +537,12 @@ export async function verifyClaim(input: VerifyInput, opts: VerifyOptions = {}):
     jev = await jevCredibility(jevState, { minConfidence: 0.45 });
   }
 
+  // Cloudflare Workers AI 免费快判兜底: Jev 无 key / 失败时,
+  // 用 Llama-3.1-8B 做零成本近似打分 (10000 neurons/day 永久免费)。
+  if (tier !== "deep" && jev === null && cloudflareEnabled()) {
+    jev = await cloudflareQuickScore(claim, fetchedContext ?? context);
+  }
+
   const useJev = jev !== null && (tier === "quick" || jev.confidence >= 0.55);
   if (useJev) {
     return buildJevResult(jev!, fetchedPages, Boolean(context?.trim()));
@@ -618,6 +624,8 @@ function buildJevResult(
   }
   if (jev.engine === "jev") {
     evidence.push(`引擎：Jev System One 一次前向决策，置信度 ${pct}%`);
+  } else if (jev.engine === "cloudflare") {
+    evidence.push(`引擎：Cloudflare Workers AI (Llama-3.1-8B) 零成本快判，置信度 ${pct}%`);
   }
 
   const risk_factors: string[] = [];
@@ -634,7 +642,7 @@ function buildJevResult(
     evidence,
     risk_factors,
     grounding: fetchedPages.length > 0 ? "fetched_sources" : hasContext ? "caller_context" : "model_knowledge",
-    engine: "jev",
+    engine: jev.engine,
     confidence: jev.confidence,
   };
 

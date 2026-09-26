@@ -54,8 +54,22 @@ const TYPESAFE_MODEL = process.env.JEV_MODEL || "jev-latest";
 
 const JEV_TIMEOUT_MS = Number(process.env.JEV_TIMEOUT_MS || 4000);
 
+// ---- Cloudflare Workers AI 免费快判通道 (开源替代, 10000 neurons/day 永久免费) ----
+// OpenAI 兼容 chat completions, 用 Llama-3.1-8B 做 System One 式打分。
+// 零成本, 无需等待名单; 需 Cloudflare 账号免费创建 API token (Workers AI 权限)。
+const CLOUDFLARE_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || "";
+const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || "";
+const CLOUDFLARE_MODEL = process.env.CLOUDFLARE_MODEL || "@cf/meta/llama-3.1-8b-instruct-fp8";
+const CLOUDFLARE_ENDPOINT = (): string =>
+  `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions`;
+const CLOUDFLARE_TIMEOUT_MS = Number(process.env.CLOUDFLARE_TIMEOUT_MS || 8000);
+
 export function jevEnabled(): boolean {
   return Boolean(TYPESAFE_KEY || OPENROUTER_KEY);
+}
+
+export function cloudflareEnabled(): boolean {
+  return Boolean(CLOUDFLARE_ACCOUNT_ID && CLOUDFLARE_API_TOKEN);
 }
 
 // ============================================================
@@ -139,7 +153,7 @@ export interface CredibilityVerdict {
   confidence: number;
   /** 是否有可核对的依据（URL 抓取 / 调用方 context） */
   has_verifiable_source: boolean;
-  engine: "jev" | "fallback";
+  engine: "jev" | "cloudflare" | "fallback";
 }
 
 const SCORE_TO_VERDICT = (s: number): string =>
@@ -198,4 +212,78 @@ export async function jevCredibility(
     has_verifiable_source: Boolean(verifiable && verifiable.value === true),
     engine: "jev",
   };
+}
+
+
+// ============================================================
+// Cloudflare Workers AI 免费快判 (开源替代通道)
+// 零成本近似 Jev: Llama-3.1-8B 只输出 JSON 分数, 不生成证据文本。
+// 仅在 Jev 不可用 (未配 key / 失败) 时由调用方使用。
+// ============================================================
+
+export async function cloudflareQuickScore(
+  claim: string,
+  context?: string,
+): Promise<CredibilityVerdict | null> {
+  if (!cloudflareEnabled()) return null;
+  const userMsg = `评估以下断言的可靠性。\n断言: ${claim.slice(0, 2000)}
+${
+    context ? `可用信息: ${context.slice(0, 6000)}` : "可用信息: (无外部材料)"
+  }
+\n只输出 JSON, 不要任何其他文字: {"credibility":0到100的整数,"credible":true或false,"verifiable":true或false,"confidence":0到1的小数}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLOUDFLARE_TIMEOUT_MS);
+  try {
+    const resp = await fetch(CLOUDFLARE_ENDPOINT(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: CLOUDFLARE_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是断言可信度评估器。只输出严格 JSON，不要输出 JSON 以外的任何内容。",
+          },
+          { role: "user", content: userMsg },
+        ],
+        max_tokens: 60,
+        temperature: 0,
+      }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as {
+      result?: { choices?: Array<{ message?: { content?: string } }> };
+    };
+    const content = data.result?.choices?.[0]?.message?.content;
+    if (!content) return null;
+    const m = content.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const parsed = JSON.parse(m[0]) as {
+      credibility?: number;
+      credible?: boolean;
+      verifiable?: boolean;
+      confidence?: number;
+    };
+    const raw = Number(parsed.credibility);
+    if (!Number.isFinite(raw)) return null;
+    const credibility = Math.max(0, Math.min(100, Math.round(raw)));
+    const confidence = Number(parsed.confidence ?? 0);
+    return {
+      credibility,
+      verdict: SCORE_TO_VERDICT(credibility),
+      confidence,
+      has_verifiable_source: Boolean(parsed.verifiable),
+      engine: "cloudflare",
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

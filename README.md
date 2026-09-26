@@ -137,6 +137,9 @@ PORT=4000 npm start
 | `DASHSCOPE_API_KEY` | Yes** | — | Required only if PROVIDER=qwen (DashScope) |
 | `MASK_MODEL` | No | `qwen-plus` | Model name for Qwen (DashScope) |
 | `TYPESAFE_API_KEY` | No | — | TypeSafe Jev System One key (https://console.typesafe.ai) — enables ~100ms quick tier |
+| `OPENROUTER_API_KEY` | No | — | OpenRouter key — same Jev protocol via gateway (fallback transport) |
+| `CLOUDFLARE_ACCOUNT_ID` | No | — | Cloudflare Workers AI free quick tier (Llama-3.1-8B, 10000 neurons/day free) |
+| `CLOUDFLARE_API_TOKEN` | No | — | Cloudflare API token with Workers AI permission |
 | `PORT` | No | `4000` | Service port |
 | `AUDIT_DIR` | No | `./audit` | Audit log directory |
 | `DISCORD_AUDIT_WEBHOOK` | No | — | Optional Discord webhook for call logging |
