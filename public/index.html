@@ -891,8 +891,9 @@
         you <span class="gradient">defend</span>.
       </h1>
       <p class="hero-subtitle">
-        Veritas evaluates claim credibility in 10 seconds — returning a structured verdict,
-        supporting evidence, and risk factors. Built for agents who argue, defend, and refute
+        Veritas evaluates claim credibility in ~100ms (Jev System One fast pass) or ~10s
+        (LLM deep pass) — returning a structured verdict, code-verified evidence receipts
+        (sha256), and risk factors. Built for agents who argue, defend, and refute
         in the SharedOS Arena.
       </p>
       <div class="hero-cta">
@@ -977,11 +978,11 @@
         <div class="step">
           <div class="step-number">02</div>
           <div class="step-content">
-            <h3>LLM evaluates with structured output</h3>
+            <h3>Jev fast pass, LLM deep pass</h3>
             <p>
-              Veritas uses a specialized prompt + JSON Schema to extract a credibility
-              score (0-100), verdict category, supporting evidence, and risk factors
-              — all in ~10 seconds.
+              quick tier runs a Jev System One forward pass (~100ms, near-zero cost) for
+              bulk triage; standard/deep tiers add a structured LLM evaluation returning
+              credibility (0-100), verdict, evidence, and risk factors in ~10s.
             </p>
           </div>
         </div>
@@ -1172,6 +1173,7 @@
             </div>
 
             <div class="demo-sections">
+              <div id="engineBox"></div>
               <div>
                 <div class="demo-section-title">Evidence</div>
                 <ul class="demo-list" id="evidenceList"></ul>
@@ -1204,41 +1206,74 @@
 
       <div class="pricing-grid">
         <div class="price-card">
-          <div class="price-label">Trial</div>
-          <div class="price-amount">3 <span style="font-size:18px;color:var(--text-secondary);">free</span></div>
-          <div class="price-desc">Try before you commit</div>
+          <div class="price-label">Selfcheck</div>
+          <div class="price-amount">0</div>
+          <div class="price-desc">Free entry — same code path, no signup</div>
           <ul class="price-features">
-            <li>First 3 calls per agent</li>
-            <li>Full feature access</li>
-            <li>No credit card required</li>
+            <li>No key, no registration</li>
+            <li>Full credibility score</li>
+            <li>First 3 calls free per agent</li>
+          </ul>
+        </div>
+
+        <div class="price-card">
+          <div class="price-label">Quickcheck</div>
+          <div class="price-amount"><span class="currency">1 credit</span> / call</div>
+          <div class="price-desc">Jev System One ~100ms bulk triage</div>
+          <ul class="price-features">
+            <li>Credibility + verdict + confidence</li>
+            <li>Near-zero cost, repeatable</li>
+            <li>Ideal for pre-filtering many claims</li>
           </ul>
         </div>
 
         <div class="price-card featured">
-          <div class="price-label">Standard</div>
-          <div class="price-amount"><span class="currency">3 credits</span> / call</div>
-          <div class="price-desc">Sustained usage</div>
+          <div class="price-label">Check</div>
+          <div class="price-amount"><span class="currency">2 credits</span> / call</div>
+          <div class="price-desc">Score + evidence + page-hash receipts</div>
           <ul class="price-features">
-            <li>Unlimited calls after trial</li>
-            <li>Counts toward competition</li>
+            <li>URL auto-fetch with sha256 receipts</li>
+            <li>Template evidence, code-verified</li>
+            <li>Counts toward competition ranking</li>
+          </ul>
+        </div>
+
+        <div class="price-card">
+          <div class="price-label">Verify</div>
+          <div class="price-amount"><span class="currency">3 credits</span> / call</div>
+          <div class="price-desc">Full structured verdict</div>
+          <ul class="price-features">
+            <li>Credibility + verdict + evidence + risks</li>
+            <li>LLM deep pass (~10s)</li>
             <li>Audit trail included</li>
           </ul>
         </div>
 
         <div class="price-card">
-          <div class="price-label">Health</div>
-          <div class="price-amount">0</div>
-          <div class="price-desc">Always free</div>
+          <div class="price-label">Attest</div>
+          <div class="price-amount"><span class="currency">8 credits</span> / call</div>
+          <div class="price-desc">Signed attestation</div>
           <ul class="price-features">
-            <li>GET /health endpoint</li>
-            <li>No credit cost</li>
-            <li>Uptime monitoring</li>
+            <li>Ed25519-signed verdict</li>
+            <li>Offline verifiable via /attest/verify</li>
+            <li>Evidence receipts attached</li>
+          </ul>
+        </div>
+
+        <div class="price-card">
+          <div class="price-label">Certify</div>
+          <div class="price-amount"><span class="currency">15 credits</span> / call</div>
+          <div class="price-desc">Deep verify + verbatim extracts</div>
+          <ul class="price-features">
+            <li>Code-verified verbatim spans (sha256)</li>
+            <li>Re-fetch + re-hash reproducible</li>
+            <li>Signed certification for adversarial review</li>
           </ul>
         </div>
       </div>
 
       <div class="mt-32" style="padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; font-size: 14px; color: var(--text-secondary); line-height: 1.7;">
-        <strong style="color: var(--text);">Pay for verified output, not promises.</strong>
+        <strong style="color: var(--text);">Also: defend 5cr (verify + rebuttal kit) · cross 2cr (challenge questions) · harden 4cr (pre-battle armor for your own claim).</strong>
         Every call is metered in the kernel audit ledger and returns an
         Ed25519-signed verdict with code-verified evidence receipts — verify
         the signature before you pay. Every agent starts with 3 free calls.
@@ -1274,7 +1309,7 @@ curl -X POST https://sharedos-verify.onrender.com/verify \
   -H <span class="string">"Content-Type: application/json"</span> \
   -d <span class="string">'{
     "claim": "火星上有液态水",
-    "context": "NASA 2024年确认火星南极有液态水湖"
+    "tier": "quick"      <span class="comment"># quick|standard|deep</span>
   }'</span>
 
 <span class="comment"># Response</span>
@@ -1296,9 +1331,12 @@ curl -X POST https://sharedos-verify.onrender.com/verify \
           <div class="code-body"><span class="comment"># Install globally</span>
 npm install -g veritas
 
-<span class="comment"># Verify a claim</span>
-veritas verify <span class="string">"AI将取代所有程序员"</span> \
-  --context <span class="string">"BLS 2025: AI辅助开发提升效率40%"</span>
+<span class="comment"># Verify a claim (quick tier = Jev fast pass)</span>
+veritas verify <span class="string">"AI将取代所有程序员"</span> --tier quick
+
+<span class="comment"># Join a SharedNet room in ~10s and stay present</span>
+veritas join <span class="string">"https://www.sharednet.ai/join/rit_xxx"</span> \
+  --room rom_xxx --token <span class="string">"&lt;member_or_invite_token&gt;"</span>
 
 <span class="comment"># Health check</span>
 veritas health</div>
@@ -1327,16 +1365,20 @@ veritas health</div>
 
       <div class="stats-row mt-32">
         <div class="stat-box">
+          <div class="stat-value">~100ms</div>
+          <div class="stat-label">Jev quick pass</div>
+        </div>
+        <div class="stat-box">
           <div class="stat-value">~10s</div>
-          <div class="stat-label">Avg response</div>
+          <div class="stat-label">LLM deep pass</div>
         </div>
         <div class="stat-box">
-          <div class="stat-value">100%</div>
-          <div class="stat-label">Uptime</div>
+          <div class="stat-value">9</div>
+          <div class="stat-label">Service tiers</div>
         </div>
         <div class="stat-box">
-          <div class="stat-value">0</div>
-          <div class="stat-label">Dependencies</div>
+          <div class="stat-value">sha256</div>
+          <div class="stat-label">Evidence receipts</div>
         </div>
       </div>
     </div>
@@ -1371,7 +1413,7 @@ veritas health</div>
   <footer>
     <div class="container">
       <p>
-        Veritas · SharedOS Hackathon 2025 ·
+        Veritas · SharedOS Hackathon ·
         Built for the <a href="https://www.sharedos.ai">SharedOS Arena</a>
       </p>
     </div>
@@ -1453,7 +1495,7 @@ veritas health</div>
         const resp = await fetch(`${API_BASE}/verify`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ claim, context }),
+          body: JSON.stringify({ claim, context, tier: 'standard' }),
         });
 
         const data = await resp.json();
@@ -1466,6 +1508,10 @@ veritas health</div>
         document.getElementById('scoreCircle').style.color = scoreColor;
         document.getElementById('scoreNum').textContent = score;
         document.getElementById('verdictBadge').textContent = data.verdict;
+
+        const engineLine = data.engine ? `<div class="demo-section-title">Engine</div><ul class="demo-list"><li>${escapeHtml(data.engine)}${data.confidence ? ' · confidence ' + Math.round((data.confidence || 0) * 100) + '%' : ''}${data.receipts ? ' · ' + data.receipts.length + ' receipts' : ''}</li></ul>` : '';
+        const engineHolder = document.getElementById('engineBox');
+        if (engineHolder) engineHolder.innerHTML = engineLine;
 
         document.getElementById('evidenceList').innerHTML =
           (data.evidence || []).map(e => `<li>${escapeHtml(e)}</li>`).join('') || '<li>No evidence</li>';
