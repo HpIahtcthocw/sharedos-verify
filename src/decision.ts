@@ -27,6 +27,13 @@ export interface DecisionQuestion {
   options?: string[];
   /** score: 打分量表 [min, max]，默认 [0, 100] */
   scale?: [number, number];
+  /**
+   * Jev 新协议 (jev-1.13) criteria:
+   *  - score: string[] 刻度描述 (如 ["完全不可信","完全可信"])
+   *  - choice/noul: Record<string,string> (选项/真伪 -> 描述)
+   * 未提供时由 jevDecide 按类型生成默认。
+   */
+  criteria?: string[] | Record<string, string>;
 }
 
 export interface DecisionAnswer {
@@ -93,16 +100,32 @@ export async function jevDecide(
   const model = useOpenRouter ? OPENROUTER_MODEL : TYPESAFE_MODEL;
   const apiKey = useOpenRouter ? OPENROUTER_KEY : TYPESAFE_KEY;
 
+  // Jev 新协议 (jev-1.13): questions 为 record, 每题 {type, instructions, criteria}
+  const qs: Record<string, unknown> = {};
+  for (const q of questions) {
+    const item: Record<string, unknown> = {
+      type: q.type,
+      instructions: q.question,
+    };
+    if (q.criteria) {
+      item.criteria = q.criteria;
+    } else if (q.type === "score") {
+      // 默认 5 点刻度 (0-100 连续映射由调用方完成)
+      item.criteria = ["完全不可信(0)", "比较不可信(25)", "不确定(50)", "比较可信(75)", "完全可信(100)"];
+    } else if (q.type === "choice" && q.options) {
+      const m: Record<string, string> = {};
+      for (const o of q.options) m[o] = o;
+      item.criteria = m;
+    } else if (q.type === "noul") {
+      item.criteria = { true: "成立", false: "不成立" };
+    }
+    qs[q.name] = item;
+  }
+
   const body = {
     state: state.slice(0, 32_000), // 官方 context window 32k token
     model,
-    questions: questions.map((q) => ({
-      type: q.type,
-      name: q.name,
-      question: q.question,
-      ...(q.options ? { options: q.options } : {}),
-      ...(q.scale ? { scale: q.scale } : {}),
-    })),
+    questions: qs,
   };
 
   const controller = new AbortController();
@@ -119,18 +142,43 @@ export async function jevDecide(
     });
     if (!resp.ok) return null;
     const data = (await resp.json()) as {
-      answers?: Record<string, { value?: unknown; probability?: unknown; confidence?: unknown }>;
+      answers?: Record<
+        string,
+        {
+          type?: string;
+          noul?: number;
+          choice?: string;
+          score?: number;
+          confidence?: number;
+          probabilities?: Record<string, number>;
+        }
+      >;
     };
     const answers = data.answers ?? {};
     const out: DecisionResponse = {};
     for (const q of questions) {
       const a = answers[q.name];
-      if (!a || a.value === undefined || a.value === null) continue;
-      out[q.name] = {
-        value: a.value as string | number | boolean,
-        probability: Number(a.probability ?? 0),
-        confidence: Number(a.confidence ?? 0),
-      };
+      if (!a) continue;
+      if (a.type === "noul" && typeof a.noul === "number") {
+        // 概率 0-1 -> 布尔值 + 概率 + 置信度(取远离 0.5 的程度)
+        out[q.name] = {
+          value: a.noul >= 0.5,
+          probability: a.noul,
+          confidence: Math.max(a.noul, 1 - a.noul),
+        };
+      } else if (a.type === "score" && typeof a.score === "number") {
+        out[q.name] = {
+          value: a.score,
+          probability: 1,
+          confidence: Number(a.confidence ?? 0),
+        };
+      } else if (a.type === "choice" && typeof a.choice === "string") {
+        out[q.name] = {
+          value: a.choice,
+          probability: Number(a.probabilities?.[a.choice] ?? 0),
+          confidence: Number(a.confidence ?? 0),
+        };
+      }
     }
     return Object.keys(out).length > 0 ? out : null;
   } catch {
@@ -173,23 +221,26 @@ export async function jevCredibility(
     {
       type: "score",
       name: "credibility",
-      question: "根据可用信息评估该断言的可靠性，0 完全不可信，100 完全可信",
-      scale: [0, 100],
+      question: "根据可用信息评估该断言的可靠性",
+      criteria: ["完全不可信(0)", "比较不可信(25)", "不确定(50)", "比较可信(75)", "完全可信(100)"],
     },
     {
       type: "noul",
       name: "credible",
       question: "该断言当前是否可信？",
+      criteria: { true: "可信", false: "不可信" },
     },
     {
       type: "noul",
       name: "verifiable",
       question: "该断言是否有可核对的信息来源或证据？",
+      criteria: { true: "有", false: "无" },
     },
   ]);
   if (!answers?.credibility) return null;
 
-  const raw = Number(answers.credibility.value);
+  // score 为 5 点刻度的连续值 (0-4) -> 映射 0-100
+  const raw = (Number(answers.credibility.value) / 4) * 100;
   const confidence = Number(answers.credibility.confidence ?? 0);
   if (!Number.isFinite(raw) || confidence < minC) return null;
 
