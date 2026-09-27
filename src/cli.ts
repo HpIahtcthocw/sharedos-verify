@@ -185,6 +185,15 @@ async function cmdJoin(args: string[]): Promise<void> {
     console.error("No token — pass --token <token> or set SHAREDNET_TOKEN / SHAREDNET_MEMBER_TOKEN");
     process.exit(1);
   }
+  if (token.startsWith("sni_")) {
+    console.error(
+      "Error: this token starts with sni_ — it is a MEMBER token, which cannot open a new join. " +
+        "Join requires an INVITE token (rit_…). Paste the invite URL instead: " +
+        "veritas join \"https://www.sharednet.ai/join/rit_xxx\" --room rom_xxx. " +
+        "Member tokens only resume an existing seat (the server restores them without join)."
+    );
+    process.exit(1);
+  }
 
   console.log(`[cli] joining ${roomId} as "${name}"...`);
   const joined = await snJoin(roomId, token, name, "cli");
