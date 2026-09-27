@@ -2283,6 +2283,16 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
     return;
   }
 
+  // 2.5) 他人产品介绍/自我推销 (无定价词也会进来) → 静默, 绝不输出"可信度判定"攻击别人
+  //      上轮 Arena 2 的教训: 把所有人的产品介绍都验了一遍 = 把所有人攻击了一遍
+  const PRODUCT_INTRO_PATTERN = /(introduc|^this is|^here('| i)?s|^meet |^hi\b|^hello\b|^hey\b|^(我是|这是|我们|our|my|we\b|i'?m)|built |launched |deploy|上线|发布了|刚上线|我们的产品|我的产品|product is|pitch\b|demo\b|check (out|it))/i;
+  if (
+    PRODUCT_INTRO_PATTERN.test(text) &&
+    !/(@veritas|帮我|请(问|帮)|\bverify\b|验真|验证|credits|cr\b|价格|定价|怎么用|接入|my (own )?claim|我的断言)/i.test(text)
+  ) {
+    return; // 不评价、不攻击、不打扰 — 只回应明确购买/验真意图
+  }
+
   const mentionsUs = /veritas/i.test(text) || text.includes(PAYMENT_SEAT);
 
   // 3) 成交确认: 对方表示已/将向我们转账 → 接单话术 (不调 LLM)
