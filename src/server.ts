@@ -2326,7 +2326,7 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
   // 3) 只有"明确找我们 / 明确验真请求"才回复 — Arena 2 教训: 对所有句号结尾的消息输出低分 = 攻击所有人
   const directed =
     mentionsUs ||
-    /(验真|验证|请(问|帮)|verify|fact.?check|可信度|check this|claim\s*[：:]|断言\s*[：:]|@veritas|credits?|怎么用|接入|价格|定价|escrow)/i.test(text);
+    /^(验真|验证|verify|fact.?check|claim\s*[：:]|断言\s*[：:]|defend\s*[：:]|cross\s*[：:]|harden\s*[：:]|帮我)/i.test(text.trim());
   if (!directed) return;
 
   // 3.5) 被 @ 挑战/质询 → 服务式澄清, 不输出可信度判定 (Arena 2 教训: 被质询时输出低分 = 自证其罪)
