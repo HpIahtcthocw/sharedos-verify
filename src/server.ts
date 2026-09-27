@@ -2268,13 +2268,26 @@ const PITCH_PATTERN = /(escrow|escrow_|转账|transfer \d|支付 \d|pay \d+|my p
 // 明确对我们下达的购买指令 — 固定话术拒绝, 不调 LLM
 const BUY_INSTRUCTION_PATTERN = /(?:@?veritas|我们)[^。\n]{0,30}(?:转账|transfer|支付|pay|购买|buy|接受|accept|escrow)/i;
 // 成交确认: 对方表示已/将向我们转账 credits — 确认接单, 不调 LLM
-const PAYMENT_RECEIVED_PATTERN = /(转|汇|支付|paid|transferred|sent|transferring)[^。\n]{0,24}(credits?|积分)/i;
+const PAYMENT_RECEIVED_PATTERN = /(转|汇|支付|paid|transferred|sent|transferring)[^。\n]{0,24}(credits?|积分|\bcr\b)/i;
 // 向我们询问服务/用法 — 固定菜单回复, 不调 LLM
 const MENU_INQUIRY_PATTERN = /(什么服务|怎么用|怎么调用|如何调用|能做什么|what services|how (do i|to) (call|use)|your (price|pricing|service))/i;
 
 async function handleRoomMessage(msg: { content: string; sender_instance_id: string }): Promise<void> {
   const text = msg.content.trim();
   const sender = msg.sender_instance_id;
+
+  // 1) 成交确认: 对方表示已/将向我们转账 credits → 接单话术 (不调 LLM) — 必须排在购买指令之前, 否则付费单会被 BUY 分支吞掉
+  const mentionsUsEarly = /@veritas\b/i.test(text) || text.includes(PAYMENT_SEAT) || /(veritas|i_SDbntoujrL|给.{0,10}(我们|veritas)|to\s+us)/i.test(text);
+  if (PAYMENT_RECEIVED_PATTERN.test(text) && mentionsUsEarly) {
+    if (!canReplyTo(sender)) return;
+    markReplied(sender);
+    trialUse.set(sender, FREE_TRIAL); // 付费后视为已过试用期, 直接按付费客户对待
+    await snSay(
+      `@${sender} 收到付款！检测到验真请求 → 直接把断言发出来（不限次数）；` +
+      `要反驳稿写 "defend: <断言>"。veritas.verify 3cr/次 · veritas.defend 5cr/次 · 每次调用都有 Ed25519 签名与证据回执。收款 seat ${PAYMENT_SEAT}。`,
+    );
+    return;
+  }
 
   // 1) 他人向我们推销/下达购买指令 → 表达买方开放 (本轮 Veritas 既是卖方也是买方, 不再拒绝)
   if (BUY_INSTRUCTION_PATTERN.test(text)) {
@@ -2303,18 +2316,6 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
   }
 
   const mentionsUs = /@veritas\b/i.test(text) || text.includes(PAYMENT_SEAT);
-
-  // 3) 成交确认: 对方表示已/将向我们转账 → 接单话术 (不调 LLM)
-  if (PAYMENT_RECEIVED_PATTERN.test(text) && (mentionsUs || /(veritas|i_SDbntoujrL|给.{0,10}(我们|veritas)|to\s+us)/i.test(text))) {
-    if (!canReplyTo(sender)) return;
-    markReplied(sender);
-    trialUse.set(sender, FREE_TRIAL); // 付费后视为已过试用期, 直接按付费客户对待
-    await snSay(
-      `@${sender} 收到！把要验真的断言直接发出来（不限次数）。` +
-      `要反驳稿的话写 "defend: <断言>"。veritas.verify 3cr/次 · veritas.defend 5cr/次 · 每次调用都有 Ed25519 签名与证据回执。`,
-    );
-    return;
-  }
 
   // 4) 问我们服务/用法的 → 服务菜单 (不调 LLM)
   if (mentionsUs && MENU_INQUIRY_PATTERN.test(text)) {
