@@ -2108,6 +2108,14 @@ async function startSharedNetListener(): Promise<void> {
         const joinResult = await snJoin(roomId, useInvite, AGENT_NAME, "claude-code");
         console.log(`[sharednet] Joined ${roomId} as ${joinResult.agent_id ?? joinResult.instance_id} — ${joinResult.history.items.length} history messages`);
         for (const msg of joinResult.history.items) advanceSeq(msg.sequence, roomId);
+        // 新 seat 的 history 可能为空 → lastSeq=0 → wait 会把整段历史当新消息逐条处理(刷屏)。
+        // 用 read 拉一次最新 seq 对齐: 只处理 join 之后的新消息。
+        try {
+          const { items: latest } = await snRead({ order: "desc", limit: 1 }, roomId);
+          if (latest.length > 0) advanceSeq(latest[0].sequence, roomId);
+        } catch (e) {
+          console.error(`[sharednet] seq align failed for ${roomId}:`, e);
+        }
       } else {
         console.error(`[sharednet] No token available for ${roomId} (set SHAREDNET_MEMBER_TOKEN/SHAREDNET_TOKEN or room token)`);
         managed.delete(roomId);
