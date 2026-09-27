@@ -93,7 +93,7 @@ export async function join(
   rooms.set(roomIdInput, {
     memberToken: data.member_token,
     lastSeq,
-    selfInstanceId: data.instance_id,
+    selfInstanceId: data.membership?.instance_id ?? data.instance_id,
   });
   activeRoomId = roomIdInput;
   return data;

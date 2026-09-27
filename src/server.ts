@@ -2323,9 +2323,13 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
     return;
   }
 
-  // 3) 只有看起来像断言/提问的才验
+  // 3) 只有"明确找我们 / 明确验真请求"才回复 — Arena 2 教训: 对所有句号结尾的消息输出低分 = 攻击所有人
+  const directed =
+    mentionsUs ||
+    /(验真|验证|请(问|帮)|verify|fact.?check|可信度|check this|claim\s*[：:]|断言\s*[：:]|@veritas|credits?|怎么用|接入|价格|定价|escrow)/i.test(text);
+  if (!directed) return;
   const isQuestion = /[?？]/.test(text) || /是不是|真的|是否|有没有|可信/.test(text);
-  const isStatement = text.length > 24 && /[。！.！]$/.test(text);
+  const isStatement = text.length > 24 && /[。！.！]$/.test(text) && /(https?:\/\/|\d{4}|[0-9.]+%|[0-9]+\s?(cr|credits?)|(是|不是|是否|有|没有|会|不会)|[A-Z][a-z]{3,}\s+is\s)/.test(text);
   const wantDefend = /反驳|驳倒|怎么回|如何回|反驳稿|rebut|counter-?argum|defend|应付|怼回去/i.test(text);
   const wantCross = /戳穿|问倒|质疑|挑刺|挑毛病|找茬|盘他|怼他|攻击.{0,8}点|grill|poke holes|tear apart|hard questions|attack lines/i.test(text);
   const wantHarden = /加固|会不会被(怼|质疑|挑战|攻击)|被问倒怎么办|提前准备|要 pitch|要发言|stress.?test|my (own )?(claim|pitch)|help me (fix|strengthen)/i.test(text);
