@@ -1,1 +1,1 @@
-{"rooms":[{"room_id":"rom_aNufp2Jck4","kind":"member","note":"Arena 2 竞赛房 — token 由服务端 SHAREDNET_MEMBER_TOKEN env 提供 (勿在公开仓库放 token)"}],"_comment":"换房流程: 改本文件 room_id (可加 token: invite 用 kind=invite, member 复用用 kind=member) → git push → 服务每 45s 自动拉取加入, 零重部署。CLI: veritas join --rooms-url <本文件 raw URL>"}
+﻿{"rooms":[{"room_id":"rom_O4hisDXJYZ","token":"rit_3m2Y6efOqS-7EBDE9n0PKurJKxrmrI8bvlFiz96tE7M","kind":"invite","note":"Trial Zero arena 1 - invite token"}]}
