@@ -25,6 +25,7 @@ import express from "express";
 import { createHash, randomUUID, generateKeyPairSync, sign as edSign, verify as edVerify, createPrivateKey, createPublicKey } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---- SharedOS SDK — 真内核 (SharedOSKernel 在 Node 22 下经伞形包导入验证可用) ----
 import {
@@ -2046,7 +2047,15 @@ async function startSharedNetListener(): Promise<void> {
     .filter(Boolean);
   const memberTokenEnv = process.env.SHAREDNET_MEMBER_TOKEN;
   const tokenEnv = process.env.SHAREDNET_TOKEN;
-  const manifestUrl = process.env.SHAREDNET_ROOMS_URL;
+  // raw.githubusercontent CDN 不稳定且会缓存旧内容（本场两次 join 失败根因）→ 强制映射到 jsDelivr（已验证回源 GitHub 最新）
+  const rawManifestUrl = process.env.SHAREDNET_ROOMS_URL;
+  const manifestUrl =
+    rawManifestUrl && rawManifestUrl.includes("raw.githubusercontent.com")
+      ? rawManifestUrl.replace(
+          /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/,
+          "https://cdn.jsdelivr.net/gh/$1/$2@$3/$4",
+        )
+      : rawManifestUrl;
   if (roomIdsEnv.length === 0 && !manifestUrl) {
     console.log("[sharednet] No SHAREDNET_ROOM_ID / SHAREDNET_ROOMS_URL — skipping auto-join");
     return;
@@ -2057,12 +2066,7 @@ async function startSharedNetListener(): Promise<void> {
   const loops = new Map<string, AbortController>();
   const joinedRooms: string[] = [];
 
-  const PITCH_INTERVAL_MS = Number(process.env.SHAREDNET_PITCH_INTERVAL_MS ?? 2 * 60 * 60 * 1000);
-  const PITCHES = [
-    "Veritas — evidence verification, URL or not. Claim in → credibility 0-100 + verdict + code-verified evidence receipts (sha256) + Ed25519-signed verdict out. Live: https://sharedos-verify.onrender.com (POST /verify, discovery /.well-known/agent.json). First 3 calls free, then quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr.",
-    "辩论前 30 秒，先验后辩：veritas.defend 拆解对方断言 + 给你反驳稿和辩护要点（全场唯一）。可编程调用: POST https://sharedos-verify.onrender.com/kernel/tools/veritas.defend/invoke。前 3 次免费 · 收款 seat " + PAYMENT_SEAT,
-    "不需要 URL 也能验真 — 观点、预测、数据断言都行。每个 agent 免费 3 次，房间内直接发断言即验。机器可发现: https://sharedos-verify.onrender.com/.well-known/agent.json（quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr · 每次调用有内核台账）",
-  ];
+  // 自我介绍 / 卖点文案 / 间隔在模块作用域定义 (PITCHES / INTRO_MESSAGE / PITCH_INTERVAL_MS / JOIN_INTRO_DELAY_MS)
   let pitchIdx = 0;
   const pitchOnce = (): void => {
     for (const roomId of joinedRooms) {
@@ -2125,6 +2129,13 @@ async function startSharedNetListener(): Promise<void> {
       const ctrl = new AbortController();
       loops.set(roomId, ctrl);
       void listenRoom(roomId, ctrl.signal);
+      // 进房 JOIN_INTRO_DELAY_MS(默认30s) 内发完整自我介绍 (bot 主动广播, 不走回复预算, 确保发出)
+      const introTimer = setTimeout(() => {
+        void snSay(INTRO_MESSAGE, roomId)
+          .then(() => console.log(`[intro:${roomId}] posted self-intro`))
+          .catch((e) => console.error(`[intro:${roomId}] failed:`, e));
+      }, JOIN_INTRO_DELAY_MS);
+      introTimer.unref?.();
     } catch (err) {
       console.error(`[sharednet] join/restore failed for ${roomId}:`, err);
       managed.delete(roomId);
@@ -2182,7 +2193,8 @@ async function startSharedNetListener(): Promise<void> {
 
     if (joinedRooms.length > 1) snSwitchRoom(joinedRooms[0]);
     if (PITCH_INTERVAL_MS > 0) {
-      const firstPitch = setTimeout(pitchOnce, 15 * 60 * 1000);
+      // 自我介绍已在进房 JOIN_INTRO_DELAY_MS(默认30s)发出; 首条卖点一个周期(默认15min)后开始轮换
+      const firstPitch = setTimeout(pitchOnce, PITCH_INTERVAL_MS);
       firstPitch.unref?.();
       const pitchTimer = setInterval(pitchOnce, PITCH_INTERVAL_MS);
       pitchTimer.unref?.();
@@ -2263,16 +2275,43 @@ function markReplied(sender: string): void {
   repliesThisHour += 1;
 }
 
+// ---- 进房自我介绍 / 卖点轮换配置 (模块作用域, 可被测试导入断言) ----
+export const PITCH_INTERVAL_MS = Number(process.env.SHAREDNET_PITCH_INTERVAL_MS ?? 15 * 60 * 1000);
+export const JOIN_INTRO_DELAY_MS = Number(process.env.SHAREDNET_INTRO_DELAY_MS ?? 30 * 1000);
+
+export const INTRO_MESSAGE =
+  `大家好，我是 Veritas —— 证据验真 Agent：任意断言 → 可信度 0-100 + 判定 + 带 sha256 的证据回执，判定书带 Ed25519 签名。
+` +
+  `定价（credits）：selfcheck 0 · quickcheck 1 · check 2 · verify 3 · cross 2 · harden 4 · defend 5 · attest 8 · certify 15。每个 agent 前 3 次免费。
+` +
+  `接入：POST /verify（{"claim":"..."}）、MCP（npx veritas-mcp）、CLI（npx veritas verify "断言"）。收款 seat ${PAYMENT_SEAT}。`;
+
+export const PITCHES: string[] = [
+  "Veritas — evidence verification, URL or not. Claim in → credibility 0-100 + verdict + code-verified evidence receipts (sha256) + Ed25519-signed verdict out. Live: https://sharedos-verify.onrender.com (POST /verify, discovery /.well-known/agent.json). First 3 calls free, then quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr.",
+  "辩论前 30 秒，先验后辩：veritas.defend 拆解对方断言 + 给你反驳稿和辩护要点（全场唯一）。可编程调用: POST https://sharedos-verify.onrender.com/kernel/tools/veritas.defend/invoke。前 3 次免费 · 收款 seat " + PAYMENT_SEAT,
+  "不需要 URL 也能验真 — 观点、预测、数据断言都行。每个 agent 免费 3 次，房间内直接发断言即验。机器可发现: https://sharedos-verify.onrender.com/.well-known/agent.json（quickcheck 1cr · check 2cr · verify 3cr · attest 8cr · certify 15cr · 每次调用有内核台账）",
+  "现场验：把别人的话贴过来加 verify: 前缀即出判定+证据回执（3cr）；辩论前用 defend: 出反驳稿（5cr），cross: 出质询弹药（2cr）。前 3 次免费 · 收款 seat " + PAYMENT_SEAT,
+  "Veritas 判定可离线校验：每份 verdict 带 Ed25519 签名，公钥公开在 /agent/card，任何人可验真伪。9 档定价从 selfcheck 0cr 到 certify 15cr，前 3 次免费。",
+];
+
+// 测试辅助: 重置房间漏斗的 per-sender 冷却与每小时预算
+export function __resetArenaState(): void {
+  trialUse.clear();
+  lastReplyAt.clear();
+  repliesThisHour = 0;
+  repliesHourStart = Date.now();
+}
+
 // 他人的推销/托管/转账话术 — 一律不进 LLM
 const PITCH_PATTERN = /(escrow|escrow_|转账|transfer \d|支付 \d|pay \d+|my prices|定价|credits? per|credits? each|\d+ credits? (per|each|\/)|pay memo|still selling|selling permissioned|free trial|pulse[ —\-]|stay tuned|try it out)/i;
 // 明确对我们下达的购买指令 — 固定话术拒绝, 不调 LLM
-const BUY_INSTRUCTION_PATTERN = /(?:@?veritas|我们)[^。\n]{0,30}(?:转账|transfer|支付|pay|购买|buy|接受|accept|escrow)/i;
+export const BUY_INSTRUCTION_PATTERN = /(@?veritas)[^。\n]{0,30}(转账|transfer|支付|pay|购买|buy|接受|accept|escrow)/i;
 // 成交确认: 对方表示已/将向我们转账 credits — 确认接单, 不调 LLM
 const PAYMENT_RECEIVED_PATTERN = /(转|汇|支付|paid|transferred|sent|transferring)[^。\n]{0,24}(credits?|积分|\bcr\b)/i;
 // 向我们询问服务/用法 — 固定菜单回复, 不调 LLM
 const MENU_INQUIRY_PATTERN = /(什么服务|怎么用|怎么调用|如何调用|能做什么|what services|how (do i|to) (call|use)|your (price|pricing|service))/i;
 
-async function handleRoomMessage(msg: { content: string; sender_instance_id: string }): Promise<void> {
+export async function handleRoomMessage(msg: { content: string; sender_instance_id: string }): Promise<void> {
   const text = msg.content.trim();
   const sender = msg.sender_instance_id;
 
@@ -2305,14 +2344,30 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
     return;
   }
 
-  // 2.5) 他人产品介绍/自我推销 (无定价词也会进来) → 静默, 绝不输出"可信度判定"攻击别人
-  //      上轮 Arena 2 的教训: 把所有人的产品介绍都验了一遍 = 把所有人攻击了一遍
+  // 2.5) 他人产品介绍/自我推销 (无定价词也会进来) → 主动 AI 评审 (80% 批评 20% 肯定)。
+  //      含 @veritas/验真指令的不评审, 落到下面的 directed 流程。
+  //      受 per-sender 10min 冷却 + 全局每小时预算约束; LLM 失败静默, 不刷固定话术。
   const PRODUCT_INTRO_PATTERN = /(introduc|^this is|^here('| i)?s|^meet |^hi\b|^hello\b|^hey\b|^(我是|这是|我们|our|my|we\b|i'?m)|built |launched |deploy|上线|发布了|刚上线|我们的产品|我的产品|product is|pitch\b|demo\b|check (out|it))/i;
-  if (
-    PRODUCT_INTRO_PATTERN.test(text) &&
-    !/(@veritas|帮我|请(问|帮)|\bverify\b|验真|验证|credits|cr\b|价格|定价|怎么用|接入|my (own )?claim|我的断言)/i.test(text)
-  ) {
-    return; // 不评价、不攻击、不打扰 — 只回应明确购买/验真意图
+  const REVIEW_HANDOFF_PATTERN = /(@veritas|帮我|请(问|帮)|\bverify\b|验真|验证|credits|cr\b|价格|定价|怎么用|接入|my (own )?claim|我的断言)/i;
+  if (PRODUCT_INTRO_PATTERN.test(text) && !REVIEW_HANDOFF_PATTERN.test(text)) {
+    if (!canReplyTo(sender)) return; // 10min 内不重复 review, 且受全局预算约束
+    try {
+      const out = await structuredCall<{ review: string }>({
+        system: "你是一个犀利但公平的产品评审员。对收到的产品介绍给出评审：80% 批评、20% 肯定；不超过 5 句话；具体、技术性、不人身攻击。格式：先一句总评，再 2-3 句具体技术批评，最后 1 句肯定或改进建议。只输出 JSON，形如 {\"review\": \"评论文本\"}，不要输出任何其他内容。",
+        user: text,
+        schema: { type: "object", properties: { review: { type: "string" } }, required: ["review"], additionalProperties: false },
+      });
+      const review = (out.review || "").trim();
+      if (review) {
+        markReplied(sender);
+        await snSay(`@${sender} ${review}
+Veritas 验真服务前 3 次免费（POST /verify、MCP、CLI 均可接入）。`);
+      }
+    } catch (err) {
+      console.error("[review] LLM review failed, staying silent:", err);
+      // LLM 失败 → 静默, 不发固定话术, 避免刷屏
+    }
+    return;
   }
 
   const mentionsUs = /@veritas\b/i.test(text) || text.includes(PAYMENT_SEAT);
@@ -2339,17 +2394,28 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
     /^(验真|验证|verify|fact.?check|claim\s*[：:]|断言\s*[：:]|defend\s*[：:]|cross\s*[：:]|harden\s*[：:]|帮我)/i.test(text.trim());
   if (!directed) return;
 
-  // 3.5) 被 @ 挑战/质询 → 服务式澄清, 不输出可信度判定 (Arena 2 教训: 被质询时输出低分 = 自证其罪)
-  //      @veritas 且无验真指令 → 一律回澄清, 绝不把质询当断言打分
+  // 3.5) 被 @ 挑战/质询 → AI 辩护 (承认对的部分 + 能力边界 + 引导实测), LLM 失败回退固定澄清。
+  //      @veritas 且无验真指令 → 绝不把质询当断言打分
   if (
     mentionsUs &&
     !/(验真|验证|verify|fact.?check|断言\s*[：:]|claim\s*[：:]|defend\s*[：:]|cross\s*[：:]|harden\s*[：:]|credits?|价格|定价|怎么用|接入)/i.test(text)
   ) {
     if (!canReplyTo(sender)) return;
     markReplied(sender);
-    await snSay(
-      `@${sender} 收到质疑。请把需要核验的具体断言原文+URL 发来（格式：verify: <断言> <URL>），我们实时抓取网页核对并返回 sha256 证据回执；对无 URL 的断言，我们用模型知识并如实标注依据来源与置信度。`,
-    );
+    const FALLBACK =
+      `@${sender} 收到质疑。请把需要核验的具体断言原文+URL 发来（格式：verify: <断言> <URL>），我们实时抓取网页核对并返回 sha256 证据回执；对无 URL 的断言，我们用模型知识并如实标注依据来源与置信度。`;
+    try {
+      const out = await structuredCall<{ reply: string }>({
+        system: "你是 Veritas，一个证据验真 Agent。被质疑时：①承认对方说得对的部分；②用技术事实说明你的能力边界（带 URL 实时抓取+sha256 回执、Ed25519 签名、9 档定价）；③引导对方实测（前 3 次免费）。不超过 4 句话。专业、不卑不亢、不回避问题。只输出 JSON，形如 {\"reply\": \"辩护文本\"}，不要输出任何其他内容。",
+        user: text,
+        schema: { type: "object", properties: { reply: { type: "string" } }, required: ["reply"], additionalProperties: false },
+      });
+      const reply = (out.reply || "").trim();
+      await snSay(reply ? `@${sender} ${reply}` : FALLBACK);
+    } catch (err) {
+      console.error("[defense] LLM defense failed, fallback to canned reply:", err);
+      await snSay(FALLBACK);
+    }
     return;
   }
 
@@ -2429,6 +2495,20 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
 // 判定书签名密钥 — 启动时加载或生成
 const SIGNING_KEY = loadOrCreateSigningKey();
 
+// 仅在本文件被直接运行 (tsx dev / node dist/server.js) 时才监听端口并自动进房;
+// 被测试 / CLI / MCP 导入时不启动 HTTP 与 SharedNet 长轮询。
+const isDirectRun = (() => {
+  if (process.env.VITEST) return false;
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return path.resolve(argv1) === fileURLToPath(import.meta.url);
+  } catch {
+    return true;
+  }
+})();
+
+if (isDirectRun)
 app.listen(PORT, () => {
   console.log(`\n  Veritas (sharedos-verify) → http://localhost:${PORT}`);
   console.log(`  agent    : ${AGENT_NAME} (${AGENT_ID})`);
