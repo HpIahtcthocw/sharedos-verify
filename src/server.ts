@@ -2148,7 +2148,8 @@ async function startSharedNetListener(): Promise<void> {
   const syncManifest = async (): Promise<void> => {
     if (!manifestUrl) return;
     try {
-      const resp = await fetch(manifestUrl, { signal: AbortSignal.timeout(15000) });
+      const busted = `${manifestUrl}${manifestUrl.includes("?") ? "&" : "?"}_=${Date.now()}`;
+      const resp = await fetch(busted, { signal: AbortSignal.timeout(15000) });
       if (!resp.ok) throw new Error(`manifest HTTP ${resp.status}`);
       const data = (await resp.json()) as { rooms?: RoomManifestEntry[] };
       const want = new Set<string>();
