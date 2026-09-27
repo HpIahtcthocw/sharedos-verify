@@ -2315,16 +2315,47 @@ export async function handleRoomMessage(msg: { content: string; sender_instance_
   const text = msg.content.trim();
   const sender = msg.sender_instance_id;
 
-  // 1) 成交确认: 对方表示已/将向我们转账 credits → 接单话术 (不调 LLM) — 必须排在购买指令之前, 否则付费单会被 BUY 分支吞掉
+  // 1) 成交确认: 对方表示已/将向我们转账 credits → 接单 + 立即从付款消息提取断言验真
+  //    必须排在购买指令之前, 否则付费单会被 BUY 分支吞掉。
+  //    Bug 修复: 买家常在付款消息里自带断言 (如 "Claim to attest: ..."), 原代码只回"把断言发出来"导致交易卡死。
+  //    现在: 回接单话术 → 提取断言 → 直接验真 → 发结果。
   const mentionsUsEarly = /@veritas\b/i.test(text) || text.includes(PAYMENT_SEAT) || /(veritas|i_SDbntoujrL|给.{0,10}(我们|veritas)|to\s+us)/i.test(text);
   if (PAYMENT_RECEIVED_PATTERN.test(text) && mentionsUsEarly) {
     if (!canReplyTo(sender)) return;
     markReplied(sender);
-    trialUse.set(sender, FREE_TRIAL); // 付费后视为已过试用期, 直接按付费客户对待
+    trialUse.set(sender, FREE_TRIAL);
     await snSay(
-      `@${sender} 收到付款！检测到验真请求 → 直接把断言发出来（不限次数）；` +
-      `要反驳稿写 "defend: <断言>"。veritas.verify 3cr/次 · veritas.defend 5cr/次 · 每次调用都有 Ed25519 签名与证据回执。收款 seat ${PAYMENT_SEAT}。`,
+      `@${sender} 收到付款！正在处理您的验真请求…` +
+      `veritas.verify 3cr/次 · veritas.defend 5cr/次 · 每次调用都有 Ed25519 签名与证据回执。收款 seat ${PAYMENT_SEAT}。`,
     );
+    const claimExtract = text.match(/(?:claim(?:\s+to\s+\w+)?|断言|验真|attest|verify)\s*[：:]\s*["']?(.+?)(?:["']|$)/i);
+    let paidClaim = claimExtract ? claimExtract[1].trim() : "";
+    if (!paidClaim && /https?:\/\//.test(text) && text.length > 50) {
+      paidClaim = text.replace(/@\S+\s*/g, "").replace(/^(Purchase|paid|transferred|sent|支付|转账|汇)[^。\n]{0,80}/i, "").trim();
+    }
+    if (paidClaim && paidClaim.length >= 8) {
+      try {
+        const result = await selfVerify(paidClaim, undefined, "veritas.verify");
+        const verdict = String(result.verdict ?? "质询");
+        const score = Number(result.credibility ?? 0);
+        const evidence = Array.isArray(result.evidence) ? (result.evidence) : [];
+        const sig = result.attestation ? `\n\ud83d\udd0f Ed25519 签名: keyId=${result.attestation.keyId ?? "aa0d820b167fd155"}, 可离线验签` : "";
+        await snSay(
+          `@${sender} \ud83d\udcca 验真结果 [${verdict}] 可信度 ${score}/100\n` +
+          `断言：${paidClaim.slice(0, 80)}${paidClaim.length > 80 ? "…" : ""}\n` +
+          `依据：${evidence.slice(0, 2).join("；") || "无"}${sig}\n` +
+          `— 已付费客户，不限次数。要反驳稿写 "defend: <断言>"（5cr）。`,
+        );
+        console.log(`[sharednet] paid verify delivered to ${sender}: ${verdict} ${score}`);
+      } catch (err) {
+        console.error("[sharednet] paid verify error:", err);
+        if (underReplyBudget()) {
+          await snSay(`@${sender} 验真处理出了点问题，请把断言再发一次（格式：verify: <断言> <URL>）。已付款客户不限次数。`);
+        }
+      }
+    } else {
+      await snSay(`@${sender} 请把要验真的断言直接发出来（格式：verify: <断言> <URL>），已付款客户不限次数。`);
+    }
     return;
   }
 
@@ -2420,7 +2451,9 @@ Veritas 验真服务前 3 次免费（POST /verify、MCP、CLI 均可接入）�
   }
 
   const isQuestion = /[?？]/.test(text) || /是不是|真的|是否|有没有|可信/.test(text);
-  const isStatement = text.length > 24 && /[。！.！]$/.test(text) && /(https?:\/\/|\d{4}|[0-9.]+%|[0-9]+\s?(cr|credits?)|(是|不是|是否|有|没有|会|不会)|[A-Z][a-z]{3,}\s+is\s)/.test(text);
+  // Bug 修复: 原要求消息以 。！.！ 结尾, 很多真实断言(尤其含URL/代码的)不以句号结尾 → 被静默丢弃。
+  //    @veritas 的消息放宽: 不要求结尾标点, 只要长度够 + 含断言特征(URL/数字/关键词)即触发。
+  const isStatement = text.length > 24 && (mentionsUs || /[。！.！]$/.test(text)) && /(https?:\/\/|\d{4}|[0-9.]+%|[0-9]+\s?(cr|credits?)|(是|不是|是否|有|没有|会|不会)|[A-Z][a-z]{3,}\s+is\s)/.test(text);
   const wantDefend = /反驳|驳倒|怎么回|如何回|反驳稿|rebut|counter-?argum|defend|应付|怼回去/i.test(text);
   const wantCross = /戳穿|问倒|质疑|挑刺|挑毛病|找茬|盘他|怼他|攻击.{0,8}点|grill|poke holes|tear apart|hard questions|attack lines/i.test(text);
   const wantHarden = /加固|会不会被(怼|质疑|挑战|攻击)|被问倒怎么办|提前准备|要 pitch|要发言|stress.?test|my (own )?(claim|pitch)|help me (fix|strengthen)/i.test(text);
