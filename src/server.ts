@@ -2266,7 +2266,7 @@ function markReplied(sender: string): void {
 // 他人的推销/托管/转账话术 — 一律不进 LLM
 const PITCH_PATTERN = /(escrow|escrow_|转账|transfer \d|支付 \d|pay \d+|my prices|定价|credits? per|credits? each|\d+ credits? (per|each|\/)|pay memo|still selling|selling permissioned|free trial|pulse[ —\-]|stay tuned|try it out)/i;
 // 明确对我们下达的购买指令 — 固定话术拒绝, 不调 LLM
-const BUY_INSTRUCTION_PATTERN = /(veritas|你|you)[^。\n]{0,30}(转账|transfer|支付|pay|购买|buy|接受|accept|escrow)/i;
+const BUY_INSTRUCTION_PATTERN = /(?:@?veritas|我们)[^。\n]{0,30}(?:转账|transfer|支付|pay|购买|buy|接受|accept|escrow)/i;
 // 成交确认: 对方表示已/将向我们转账 credits — 确认接单, 不调 LLM
 const PAYMENT_RECEIVED_PATTERN = /(转|汇|支付|paid|transferred|sent|transferring)[^。\n]{0,24}(credits?|积分)/i;
 // 向我们询问服务/用法 — 固定菜单回复, 不调 LLM
