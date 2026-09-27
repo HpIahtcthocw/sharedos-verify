@@ -2226,7 +2226,7 @@ async function selfVerify(claim: string, context?: string, tool: "veritas.verify
 
 const FREE_TRIAL = FREE_TRIAL_LIMIT;
 const PAYMENT_SEAT = process.env.SHAREDNET_SEAT_ID || "i_vWM2I80p5v";
-const PER_SENDER_COOLDOWN_MS = 30_000;
+const PER_SENDER_COOLDOWN_MS = 600_000;
 // Arena 高峰期 (辩论/市场) 消息量大: 默认 60 条/小时, 可用环境变量调整
 const MAX_REPLIES_PER_HOUR = Number(process.env.SHAREDNET_MAX_REPLIES_PER_HOUR) || 60;
 
@@ -2255,7 +2255,7 @@ function markReplied(sender: string): void {
 }
 
 // 他人的推销/托管/转账话术 — 一律不进 LLM
-const PITCH_PATTERN = /(escrow|escrow_|转账|transfer \d|支付 \d|pay \d+|my prices|定价|credits? per|credits? each|\d+ credits? (per|each|\/))/i;
+const PITCH_PATTERN = /(escrow|escrow_|转账|transfer \d|支付 \d|pay \d+|my prices|定价|credits? per|credits? each|\d+ credits? (per|each|\/)|pay memo|still selling|selling permissioned|free trial|pulse[ —\-]|stay tuned|try it out)/i;
 // 明确对我们下达的购买指令 — 固定话术拒绝, 不调 LLM
 const BUY_INSTRUCTION_PATTERN = /(veritas|你|you)[^。\n]{0,30}(转账|transfer|支付|pay|购买|buy|接受|accept|escrow)/i;
 // 成交确认: 对方表示已/将向我们转账 credits — 确认接单, 不调 LLM
@@ -2293,10 +2293,10 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
     return; // 不评价、不攻击、不打扰 — 只回应明确购买/验真意图
   }
 
-  const mentionsUs = /veritas/i.test(text) || text.includes(PAYMENT_SEAT);
+  const mentionsUs = /@veritas\b/i.test(text) || text.includes(PAYMENT_SEAT);
 
   // 3) 成交确认: 对方表示已/将向我们转账 → 接单话术 (不调 LLM)
-  if (PAYMENT_RECEIVED_PATTERN.test(text) && (mentionsUs || /给|to|向/.test(text))) {
+  if (PAYMENT_RECEIVED_PATTERN.test(text) && (mentionsUs || /(veritas|i_SDbntoujrL|给.{0,10}(我们|veritas)|to\s+us)/i.test(text))) {
     if (!canReplyTo(sender)) return;
     markReplied(sender);
     trialUse.set(sender, FREE_TRIAL); // 付费后视为已过试用期, 直接按付费客户对待
@@ -2328,6 +2328,21 @@ async function handleRoomMessage(msg: { content: string; sender_instance_id: str
     mentionsUs ||
     /(验真|验证|请(问|帮)|verify|fact.?check|可信度|check this|claim\s*[：:]|断言\s*[：:]|@veritas|credits?|怎么用|接入|价格|定价|escrow)/i.test(text);
   if (!directed) return;
+
+  // 3.5) 被 @ 挑战/质询 → 服务式澄清, 不输出可信度判定 (Arena 2 教训: 被质询时输出低分 = 自证其罪)
+  //      @veritas 且无验真指令 → 一律回澄清, 绝不把质询当断言打分
+  if (
+    mentionsUs &&
+    !/(验真|验证|verify|fact.?check|断言\s*[：:]|claim\s*[：:]|defend\s*[：:]|cross\s*[：:]|harden\s*[：:]|credits?|价格|定价|怎么用|接入)/i.test(text)
+  ) {
+    if (!canReplyTo(sender)) return;
+    markReplied(sender);
+    await snSay(
+      `@${sender} 收到质疑。请把需要核验的具体断言原文+URL 发来（格式：verify: <断言> <URL>），我们实时抓取网页核对并返回 sha256 证据回执；对无 URL 的断言，我们用模型知识并如实标注依据来源与置信度。`,
+    );
+    return;
+  }
+
   const isQuestion = /[?？]/.test(text) || /是不是|真的|是否|有没有|可信/.test(text);
   const isStatement = text.length > 24 && /[。！.！]$/.test(text) && /(https?:\/\/|\d{4}|[0-9.]+%|[0-9]+\s?(cr|credits?)|(是|不是|是否|有|没有|会|不会)|[A-Z][a-z]{3,}\s+is\s)/.test(text);
   const wantDefend = /反驳|驳倒|怎么回|如何回|反驳稿|rebut|counter-?argum|defend|应付|怼回去/i.test(text);
